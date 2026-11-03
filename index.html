@@ -1,6 +1,6 @@
 <!doctype html><html><head><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover"><style>:root{color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html{scroll-padding-top:env(safe-area-inset-top,0px)}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#fff;color:#000}img{max-width:100%}[hidden]:not([hidden=until-found i]){display:none!important}</style></head><body>
 <meta name="claude:viewport-fit-sides" content="cover">
-<title>Three-Band Liquid Glass Orb</title>
+<title>UZIO</title>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Manrope:wght@500;600&display=swap">
 <style>
 /* Layout: a full-bleed stage. One WebGL canvas holds the orb (and the whole backdrop, so the theme change
@@ -347,8 +347,45 @@ body {
   .thread { scroll-behavior: auto; }
   .caption, .caption .w { transition-duration: 0.01s; }
 }
+/* The Awakening: isolated entrance styling; all regular UI styles stay intact. */
+.intro-skip {
+  position: fixed;
+  right: max(22px, env(safe-area-inset-right, 0px));
+  bottom: calc(26px + env(safe-area-inset-bottom, 0px));
+  z-index: 20;
+  padding: 11px 19px;
+  border: 1px solid rgba(255,255,255,.24);
+  border-radius: 999px;
+  background: rgba(13,29,42,.58);
+  color: #f0f4f7;
+  font: 600 12px/1 var(--font-ui);
+  letter-spacing: .025em;
+  -webkit-backdrop-filter: blur(14px);
+  backdrop-filter: blur(14px);
+  cursor: pointer;
+  transition: opacity .3s ease, background .2s ease;
+}
+.intro-skip:hover { background: rgba(50,73,90,.82); }
+.intro-skip:focus-visible { outline: 2px solid #7fd0ff; outline-offset: 4px; }
+.intro-active .theme, .intro-active .tools, .intro-active .dock,
+.intro-active .thread, .intro-active .caption {
+  opacity: 0;
+  pointer-events: none;
+}
+.intro-revealing .theme, .intro-revealing .tools,
+.intro-revealing .dock, .intro-revealing .thread,
+.intro-revealing .caption {
+  opacity: 1;
+  transition: opacity .75s ease;
+}
+@media (prefers-reduced-motion: reduce) {
+  .intro-skip { display: none !important; }
+  .intro-active .theme, .intro-active .tools, .intro-active .dock,
+  .intro-active .thread, .intro-active .caption { opacity: 1; pointer-events: auto; }
+}
 </style>
 <canvas id="orb" role="img" aria-label="Voice orb. Tap to start or stop speaking."></canvas>
+<button id="intro-skip" class="intro-skip" type="button" hidden>Skip intro &rarr;</button>
 <p id="nogl" hidden>This page needs WebGL 2 to draw the orb. Open it in a current version of Chrome, Safari, Edge or Firefox.</p>
 
 <button id="theme" class="theme" type="button" role="switch" aria-checked="true" aria-label="Switch to light mode" title="Switch theme">
@@ -411,7 +448,7 @@ body {
   var CAP_H = 48, CAP_GAP = 8;   // the caption band: two lines of text, then a small gap before the conversation
   var dockEl = document.getElementById("dock");
   // where the orb sits, as fractions of the screen (shared by the drawing loop and the thread layout)
-  var ORB_H = 0.34, ORB_W = 0.46, ORB_Y = 0.63;   // diameter vs height, diameter vs width, centre height from the bottom
+  var ORB_H = 0.34, ORB_W = 0.46, ORB_Y = 0.71;   // diameter vs height, diameter vs width, centre height from the bottom
   var knob = themeBtn.querySelector(".knob");
   var gl = canvas.getContext("webgl2", { antialias: false, alpha: false, powerPreference: "high-performance" });
   if (!gl) { document.getElementById("nogl").hidden = false; return; }
@@ -430,6 +467,8 @@ uniform float u_time;
 uniform float u_speak;    // 0 idle .. 1 speaking (eased)
 uniform float u_level;    // 0..1 speech energy
 uniform vec3  u_bands;    // bass, mids, treble (independently measured)
+uniform float u_floorLevel; // separately smoothed ambient glow
+uniform vec3  u_floorBands; // slower frequency response for corner glow
 uniform float u_listen;   // 0 = not listening, 1 = listening (eased)
 uniform float u_from;     // theme the wave is leaving (0 light, 1 dark)
 uniform float u_to;       // theme the wave is bringing in
@@ -438,6 +477,7 @@ uniform vec2  u_origin;   // where the wave starts (the theme switch), device px
 uniform float u_maxd;     // distance from the origin to the farthest corner
 uniform float u_ripple;   // 0..1 how strongly rings leave the orb (speech energy, eased)
 uniform float u_rphase;   // ring clock: runs faster when the voice is louder
+uniform float u_glint;    // one-shot glass reflection sweep at the end of the intro
 out vec4 o;
 
 const float N = 2.0;        // exponent 2 = true circle at rest, true oval once stretched
@@ -579,16 +619,18 @@ vec3 band(vec2 s, int layer) {
   float gain = layer == 0 ? 0.175 : (layer == 1 ? 0.155 : 0.125);
   float A = u_speak * (0.009 + gain * energy) * env;
   float yc = y0 * u_speak + 0.055 * (1.0 - x*x) - 0.035*x + A*wave;
-  // thin lines, each with its own colour: bass warm, mids blue, treble cyan
+  // Wider, softer ribbons with a gentler centre and a broader surrounding glow.
+  // The lines feel more atmospheric and less sharply drawn.
   float d = s.y - yc;
-  float w = layer == 0 ? 0.017 : (layer == 1 ? 0.012 : 0.008);
-  float core = exp(-(d * d) / (w * w));
-  float halo = exp(-(d * d) / (w * w * 14.0)) * 0.32;
+  float w = layer == 0 ? 0.026 : (layer == 1 ? 0.020 : 0.015);
+  float core = exp(-(d * d) / (w * w * 1.35)) * 0.78;
+  float halo = exp(-(d * d) / (w * w * 34.0)) * 0.30;
+  float bloom = exp(-(d * d) / (w * w * 150.0)) * 0.14;
   vec3 lineCol = layer == 0 ? ramp(0.20, x) : (layer == 1 ? ramp(0.44, x) : ramp(0.64, x));
-  vec3 col = lineCol * (core + halo) + vec3(1.0, 0.92, 0.85) * core * 0.35;
-  // a soft pool of the line's own colour that follows the wave and swells with its energy
-  col += lineCol * exp(-(d * d) / 0.045) * (0.10 + 0.50 * energy);
-  return col * bell * (0.45 + 0.85 * energy * u_speak);
+  vec3 col = lineCol * (core + halo + bloom) + vec3(1.0, 0.92, 0.85) * core * 0.18;
+  // a wider, softer pool of the line's colour that follows the wave and swells with its energy
+  col += lineCol * exp(-(d * d) / 0.085) * (0.07 + 0.34 * energy);
+  return col * bell * (0.42 + 0.72 * energy * u_speak);
 }
 
 void main() {
@@ -721,6 +763,19 @@ void main() {
   float arcs = (ring * 0.30 + sheen * 0.07) * (0.8 + 0.5 * u_level * u_speak);
   col += (arcs + soft * 0.11) * topMask * lit * vec3(0.86, 0.93, 1.0);
   col += hear * lm;   // sound waves arriving
+  // A brief diagonal specular reflection catches the curved glass as the intro ends.
+  // The sweep is confined to the orb and gently fades at its silhouette.
+  if (u_glint >= 0.0 && u_glint <= 1.0) {
+    float sweep = mix(-1.55, 1.55, u_glint);
+    float axis = q.x + 0.36 * q.y;
+    float narrow = exp(-pow((axis - sweep) / 0.095, 2.0));
+    float softEdge = exp(-pow((axis - sweep) / 0.25, 2.0));
+    float vertical = smoothstep(-0.75, 0.18, q.y) * (1.0 - smoothstep(0.80, 1.08, q.y));
+    float rimFade = 1.0 - smoothstep(0.82, 1.0, rc);
+    float envelope = sin(3.14159265 * u_glint);
+    float highlight = (narrow * 0.23 + softEdge * 0.075) * vertical * rimFade * envelope;
+    col += vec3(0.82, 0.92, 1.0) * highlight;
+  }
   // dark surroundings: the colour glows, adding light to the glass.
   // light surroundings: the colour sits in the glass like ink, so it stays visible on a bright backdrop.
   vec3 darkRes = 1.0 - exp(-(base + col) * 1.4);
@@ -740,6 +795,42 @@ void main() {
   float tight = 1.0 - smoothstep(0.95, 1.45, rs);
   float sh = 1.0 - (1.0 - wide * 0.55) * (1.0 - tight * 0.35);
   bg *= vec3(1.0 - sh * 0.30, 1.0 - sh * 0.30, 1.0 - sh * 0.28);
+
+  // Ambient speech illumination wraps the ENTIRE perimeter, not just the corners.
+  // Long falloff and a slow colour drift keep it atmospheric rather than flashing.
+  float drift = 0.018 * sin(u_time * 0.20);
+  float bottomEdge = exp(-pow(uv.y / 0.23, 2.0));
+  float topEdge = exp(-pow((1.0 - uv.y) / 0.21, 2.0));
+  float leftEdge = exp(-pow(uv.x / 0.19, 2.0));
+  float rightEdge = exp(-pow((1.0 - uv.x) / 0.19, 2.0));
+
+  // Use the same continuous six-stop colour ramp as the actual soundwave:
+  // champagne / amber -> coral -> pink -> blue -> cyan -> violet.
+  // Different paths around the screen keep every colour visible at once.
+  vec3 bottomColour = ramp(clamp(0.04 + 0.91 * uv.x + drift, 0.0, 1.0), uv.x - 0.5);
+  vec3 topColour = ramp(clamp(0.93 - 0.84 * uv.x - drift, 0.0, 1.0), 0.5 - uv.x);
+  vec3 leftColour = ramp(clamp(0.23 + 0.53 * uv.y + drift, 0.0, 1.0), -0.25);
+  vec3 rightColour = ramp(clamp(0.76 - 0.55 * uv.y - drift, 0.0, 1.0), 0.25);
+
+  // Weighted averaging prevents extra-bright corner intersections.
+  float bottomW = bottomEdge * 0.91;
+  float topW = topEdge * 0.54;
+  float leftW = leftEdge * 0.66;
+  float rightW = rightEdge * 0.66;
+  float sumW = bottomW + topW + leftW + rightW;
+  vec3 edgeColour = (bottomColour * bottomW + topColour * topW
+                   + leftColour * leftW + rightColour * rightW) / max(sumW, 0.0001);
+  float coverage = 1.0 - exp(-sumW * 1.15);
+
+  // Bass, mids and treble subtly shape the glow without tracking every syllable.
+  float voiceColourEnergy = dot(u_floorBands, vec3(0.30, 0.40, 0.30));
+  float strength = u_floorLevel * (0.80 + 0.20 * voiceColourEnergy) * coverage * 0.76 * 0.15; // 15% of previous perimeter glow intensity
+  vec3 darkEdge = bg + edgeColour * strength * 0.80;
+  // Translucent colour on the light theme; bright additive bloom on the dark theme.
+  vec3 lightTint = mix(bg, edgeColour * 0.78 + vec3(0.30), 0.60);
+  vec3 lightEdge = mix(bg, lightTint, clamp(strength * 0.42, 0.0, 0.32));
+  bg = mix(lightEdge, darkEdge, th);
+
   // ripples: soft rings leave the orb while it speaks, widening and fading as they go. They follow the orb's own
   // outline, are fainter below it (where the caption and conversation live) and never draw over the glass.
   if (u_ripple > 0.004) {
@@ -800,11 +891,70 @@ void main() {
 
   var U = {};
   ["u_res", "u_center", "u_a", "u_scale", "u_time", "u_speak", "u_level", "u_bands",
-   "u_listen", "u_from", "u_to", "u_wave", "u_origin", "u_maxd", "u_ripple", "u_rphase"].forEach(function (n) {
+   "u_floorLevel", "u_floorBands", "u_glint", "u_listen", "u_from", "u_to", "u_wave", "u_origin", "u_maxd", "u_ripple", "u_rphase"].forEach(function (n) {
     U[n] = gl.getUniformLocation(prog, n);
   });
 
   var reduce = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  // The Awakening entrance runs on the SAME WebGL orb, not on a separate canvas or video.
+  // It only affects render uniforms while active; the existing UI is otherwise unchanged.
+  var INTRO_MS = 4500;
+  var introSkip = document.getElementById("intro-skip");
+  var introActive = !reduce;
+  var introStartedAt = performance.now();
+  var introRevealing = false;
+  var introEndAt = introStartedAt + INTRO_MS;
+  // Start near the final reveal and finish just after the interface settles.
+  var GLINT_START = 4050, GLINT_DURATION = 700;
+  var introWasSkipped = false;
+  var introUi = [document.getElementById("theme"), document.getElementById("tools"), dockEl, threadEl];
+  if (introActive) {
+    document.documentElement.classList.add("intro-active");
+    introSkip.hidden = false;
+    introUi.forEach(function (el) { if (el) el.inert = true; });
+  }
+  function finishIntro() {
+    if (!introActive) return;
+    introActive = false;
+    introSkip.hidden = true;
+    canvas.style.pointerEvents = "";
+    document.documentElement.classList.remove("intro-active", "intro-revealing");
+    introUi.forEach(function (el) { if (el) el.inert = false; });
+    // Do not change any ordinary speaking, listening or theme state.
+  }
+  introSkip.addEventListener("click", function () { introWasSkipped = true; finishIntro(); });
+  canvas.style.pointerEvents = introActive ? "none" : "";
+  // Escape provides a keyboard path to skip alongside the visible button.
+  window.addEventListener("keydown", function (e) {
+    if (introActive && e.key === "Escape") { introWasSkipped = true; finishIntro(); }
+  });
+  function easeIntro(x) {
+    x = Math.max(0, Math.min(1, x));
+    return x * x * (3 - 2 * x);
+  }
+  function introVisual(now) {
+    if (!introActive) return { size: 1, speak: null, energy: 0, ripple: 0 };
+    var elapsed = Math.max(0, now - introStartedAt);
+    if (elapsed >= INTRO_MS) {
+      finishIntro();
+      return { size: 1, speak: null, energy: 0, ripple: 0 };
+    }
+    var t = elapsed / INTRO_MS;
+    // A point of light grows into glass, overshoots gently, then settles.
+    var size = t < .21 ? .018 + .11 * easeIntro(t / .21)
+             : t < .60 ? .128 + .93 * easeIntro((t - .21) / .39)
+             : t < .78 ? 1.058 - .058 * easeIntro((t - .60) / .18) : 1;
+    // The first soft wave travels through the sphere just after formation.
+    var pulse = Math.exp(-Math.pow((t - .68) / .105, 2));
+    // Reveal normal UI over the last 0.8 seconds, with orb fully formed.
+    if (t >= .82 && !introRevealing) {
+      introRevealing = true;
+      document.documentElement.classList.add("intro-revealing");
+    }
+    return { size: size, speak: .78 * pulse, energy: .60 * pulse, ripple: .62 * pulse };
+  }
+
   var W = 1, H = 1, DPR = 1;
 
   function resize() {
@@ -902,6 +1052,7 @@ void main() {
   var speakMix = 0, level = 0, prog = 0;
   var sx = 1, vx = 0, sy = 1, vy = 0;
   var bandsSmooth = [0, 0, 0];
+  var floorLevel = 0, floorBands = [0, 0, 0];
   var rippleE = 0, rphase = 0, levelSlow = 0;   // ripple strength (slowly follows the voice) and its ring clock
   var externalLevel = null;   // set by a real audio source later
 
@@ -1332,6 +1483,16 @@ void main() {
       bandsSmooth[bi] += (target - bandsSmooth[bi]) * (1 - Math.exp(-dt * speed));
     }
 
+    // Smooth the ambient glow independently: ~1.4s rise, ~2.3s fall.
+    // Preserve the quick response of the orb ribbons themselves.
+    var ambientTarget = spk ? Math.min(1, 0.52 + 0.48 * level) : 0;
+    var floorRate = ambientTarget > floorLevel ? 1.05 : 0.40;
+    floorLevel += (ambientTarget - floorLevel) * (1 - Math.exp(-dt * floorRate));
+    for (var fi = 0; fi < 3; fi++) {
+      var fTarget = spk ? bandsSmooth[fi] : 0;
+      floorBands[fi] += (fTarget - floorBands[fi]) * (1 - Math.exp(-dt * 0.65));
+    }
+
     // underdamped springs give the soft wobble and the slight sideways stretch
     // speaking: the orb stays a circle. It swells a little with the loudness (pulse) and is squeezed or stretched a
     // little as the voice rises or falls away (jelly); the springs below ring that out into a soft wobble.
@@ -1349,23 +1510,31 @@ void main() {
       vy += (k * (tys - sy) - c * vy) * h; sy += vy * h;
     }
 
+    var intro = introVisual(now);
     var orbD = Math.min(H * ORB_H, W * ORB_W);
     gl.uniform2f(U.u_res, W, H);
     gl.uniform2f(U.u_center, W * 0.5, H * ORB_Y);
-    gl.uniform1f(U.u_a, orbD / 2);
+    gl.uniform1f(U.u_a, orbD / 2 * intro.size);
     gl.uniform2f(U.u_scale, sx, sy);
     gl.uniform1f(U.u_time, t);
-    gl.uniform1f(U.u_speak, speakMix);
-    gl.uniform1f(U.u_level, level);
+    gl.uniform1f(U.u_speak, intro.speak === null ? speakMix : Math.max(speakMix, intro.speak));
+    gl.uniform1f(U.u_level, Math.max(level, intro.energy));
     gl.uniform3f(U.u_bands, bandsSmooth[0], bandsSmooth[1], bandsSmooth[2]);
+    gl.uniform1f(U.u_floorLevel, floorLevel);
+    gl.uniform3f(U.u_floorBands, floorBands[0], floorBands[1], floorBands[2]);
     gl.uniform1f(U.u_listen, listenMix);
     gl.uniform1f(U.u_from, fromT);
     gl.uniform1f(U.u_to, toT);
     gl.uniform1f(U.u_wave, wave);
     gl.uniform2f(U.u_origin, origin[0], origin[1]);
     gl.uniform1f(U.u_maxd, maxd);
-    gl.uniform1f(U.u_ripple, rippleE * speakMix);
+    gl.uniform1f(U.u_ripple, Math.max(rippleE * speakMix, intro.ripple));
     gl.uniform1f(U.u_rphase, rphase);
+    // A single reflection sweep, never replayed during normal speech or theme changes.
+    var glintTime = now - introStartedAt - GLINT_START;
+    var glint = (!reduce && !introWasSkipped && glintTime >= 0 && glintTime <= GLINT_DURATION)
+      ? glintTime / GLINT_DURATION : -1;
+    gl.uniform1f(U.u_glint, glint);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
     requestAnimationFrame(frame);
   }
