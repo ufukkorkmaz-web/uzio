@@ -1,24 +1,21 @@
-<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<!doctype html><html><head><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover"><style>:root{color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html{scroll-padding-top:env(safe-area-inset-top,0px)}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#fff;color:#000}img{max-width:100%}[hidden]:not([hidden=until-found i]){display:none!important}</style></head><body>
 <meta name="claude:viewport-fit-sides" content="cover">
 <title>Three-Band Liquid Glass Orb</title>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Manrope:wght@500;600&display=swap">
 <style>
 /* Layout: a full-bleed stage. One WebGL canvas holds the orb (and the whole backdrop, so the theme change
-   can sweep across the screen as a wave). A theme switch sits top right, the controls at the bottom. */
+   can sweep across the screen as a wave). The orb sits in the upper half; the chatbox is the only control at the
+   bottom. A small theme switch sits top right and the test controls are folded away top left. */
 :root {
-  --bg: #f3eee3;            /* coconut milk */
-  --fg: #1d1c22;
-  --fg-dim: #77747f;
-  --line: rgba(0, 0, 0, 0.14);
-  --fill: rgba(0, 0, 0, 0.045);
-  --fill-hover: rgba(0, 0, 0, 0.085);
-  --accent: #c9742a;
+  --bg: #02090e;            /* dark is the default; the switch brings in coconut milk */
+  --fg: #ecebf2;
+  --fg-dim: #8d9aa6;
+  --line: rgba(255, 255, 255, 0.16);
+  --fill: rgba(255, 255, 255, 0.07);
+  --fill-hover: rgba(255, 255, 255, 0.12);
+  --accent: #7fd0ff;
   --font-ui: "Manrope", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
-  color-scheme: light;
+  color-scheme: dark;
 }
 [hidden] { display: none !important; }   /* so the WebGL notice stays hidden unless it is needed */
 html, body { height: 100%; margin: 0; }
@@ -51,7 +48,7 @@ body {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 12px;
+  gap: 10px;
   padding-top: 0;
   padding-bottom: calc(28px + env(safe-area-inset-bottom, 0px));
   padding-left: max(16px, env(safe-area-inset-left, 0px));
@@ -61,7 +58,7 @@ body {
 .dock > * { pointer-events: auto; }
 
 /* UI colours ease over while the wave passes, so nothing flashes */
-#toggle, #demo, #listen, #audio-play, #audio-file, .sample, #state {
+#toggle, #demo, #listen, #audio-play, #audio-file, .sample, #state, .chat input, .mic, .tools summary, .tools .panel, .msg.user {
   transition: background 0.45s ease, border-color 0.45s ease, color 0.45s ease;
 }
 #toggle {
@@ -98,6 +95,152 @@ body {
 .sample { max-width: 380px; margin: 0; text-align: center; color: var(--fg-dim); font: 500 11px/1.45 var(--font-ui); }
 
 #toggle[aria-pressed="true"] { border-color: rgba(201, 116, 42, 0.6); }
+
+/* ---- chatbox: same glass-pill language as the buttons, follows the theme ---- */
+.chat { display: flex; align-items: center; gap: 10px; width: min(560px, 100%); }
+.chat input {
+  flex: 1;
+  min-width: 0;
+  height: 52px;
+  box-sizing: border-box;
+  padding: 0 22px;
+  font: 500 16px/1 var(--font-ui);
+  color: var(--fg);
+  background: var(--fill);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  -webkit-backdrop-filter: blur(14px);
+  backdrop-filter: blur(14px);
+}
+.chat input::placeholder { color: var(--fg-dim); opacity: 1; }
+.chat input:hover { background: var(--fill-hover); }
+.chat input:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.mic {
+  flex: none;
+  width: 52px;
+  height: 52px;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  color: var(--fg);
+  background: var(--fill);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  cursor: pointer;
+  -webkit-backdrop-filter: blur(14px);
+  backdrop-filter: blur(14px);
+}
+.mic:hover { background: var(--fill-hover); }
+.mic:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.mic[aria-pressed="true"] { border-color: var(--accent); }
+.mic svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+
+/* ---- live caption: one reserved band directly under the orb. The conversation below starts under this band,
+   so the two can never overlap. The words being spoken light up as they are said. ---- */
+.caption {
+  position: fixed;
+  left: 0;
+  right: 0;
+  margin-inline: auto;
+  width: min(560px, calc(100vw - 32px));
+  box-sizing: border-box;
+  padding: 0 6px;
+  overflow: hidden;
+  text-align: center;
+  text-wrap: balance;
+  font: 500 15px/1.5 var(--font-ui);
+  color: var(--fg);
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.5s ease;
+}
+.caption.on { opacity: 1; }
+.caption .w { opacity: 0.34; transition: opacity 0.25s ease; }
+.caption .w.done { opacity: 0.9; }
+.caption .w.on { opacity: 1; }
+
+/* ---- conversation: sits between the orb and the chatbox. JS sets its top edge just below the orb's glow, so
+   nothing can ever run into the orb; older messages dissolve through the mask as they scroll up toward it.
+   It scrolls like any list, but the scrollbar is hidden. ---- */
+.thread {
+  position: fixed;
+  left: 0;
+  right: 0;
+  margin-inline: auto;
+  width: min(560px, calc(100vw - 32px));
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 0 2px 8px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+  scroll-behavior: smooth;
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0, rgba(0,0,0,0.35) 16%, #000 52%, #000 calc(100% - 20px), transparent 100%);
+  mask-image: linear-gradient(to bottom, transparent 0, rgba(0,0,0,0.35) 16%, #000 52%, #000 calc(100% - 20px), transparent 100%);
+}
+.thread::-webkit-scrollbar { display: none; width: 0; height: 0; }
+.thread:focus-visible { outline: none; }
+.thread > :first-child { margin-top: auto; }   /* short threads sit at the bottom, next to the input */
+.msg {
+  max-width: 84%;
+  font: 500 15px/1.5 var(--font-ui);
+  color: var(--fg);
+  overflow-wrap: anywhere;
+  animation: msgin 0.4s ease both;
+}
+.msg.user {
+  align-self: flex-end;
+  padding: 10px 16px;
+  background: var(--fill);
+  border: 1px solid var(--line);
+  border-radius: 20px 20px 6px 20px;
+}
+.msg.tutor { align-self: flex-start; padding: 2px 4px; }
+@keyframes msgin { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+
+/* ---- test controls: folded away top left so the orb stays the only thing on the stage ---- */
+.tools {
+  position: fixed;
+  top: calc(14px + env(safe-area-inset-top, 0px));
+  left: max(14px, env(safe-area-inset-left, 0px));
+  z-index: 5;
+}
+.tools summary {
+  list-style: none;
+  cursor: pointer;
+  display: inline-block;
+  font: 600 11px/1 var(--font-ui);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--fg-dim);
+  background: var(--fill);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 9px 14px;
+}
+.tools summary::-webkit-details-marker { display: none; }
+.tools summary:hover { background: var(--fill-hover); }
+.tools summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.tools .panel {
+  margin-top: 10px;
+  width: min(320px, calc(100vw - 28px));
+  max-height: calc(100dvh - 90px);
+  overflow-y: auto;
+  box-sizing: border-box;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  background: var(--fill);
+  border: 1px solid var(--line);
+  border-radius: 20px;
+  -webkit-backdrop-filter: blur(18px);
+  backdrop-filter: blur(18px);
+}
 #toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
 #state {
   margin: 0;
@@ -120,13 +263,13 @@ body {
   font: 500 15px/1.5 var(--font-ui);
 }
 
-/* ---- theme switch (top right): a sun that rolls into a moon ---- */
+/* ---- theme switch (top right): a small sun that rolls into a moon ---- */
 .theme {
   position: fixed;
-  top: calc(18px + env(safe-area-inset-top, 0px));
-  right: max(18px, env(safe-area-inset-right, 0px));
-  width: 68px;
-  height: 36px;
+  top: calc(14px + env(safe-area-inset-top, 0px));
+  right: max(14px, env(safe-area-inset-right, 0px));
+  width: 48px;
+  height: 27px;
   padding: 0;
   border: 0;
   background: none;
@@ -145,7 +288,7 @@ body {
   border: 1px solid var(--line);
   overflow: hidden;
   transition: opacity 0.7s ease;
-  box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.12);
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.12);
 }
 .theme .sky.day   { background: linear-gradient(180deg, #cfe8fb, #f8f0de); opacity: 1; }
 .theme .sky.night { background: linear-gradient(180deg, #0f3d59, #02090e); opacity: 0; }
@@ -153,34 +296,34 @@ body {
 .theme[aria-checked="true"] .sky.night { opacity: 1; }
 
 .theme .stars, .theme .cloud { position: absolute; pointer-events: none; transition: opacity 0.6s ease, transform 0.7s cubic-bezier(.34, 1.3, .64, 1); }
-.theme .stars { left: 11px; top: 7px; width: 26px; height: 22px; opacity: 0; transform: translateY(-10px); }
+.theme .stars { left: 8px; top: 5px; width: 20px; height: 17px; opacity: 0; transform: translateY(-8px); }
 .theme[aria-checked="true"] .stars { opacity: 1; transform: none; }
-.theme .stars i { position: absolute; width: 3px; height: 3px; border-radius: 50%; background: #fff; box-shadow: 0 0 5px 1px rgba(255, 255, 255, 0.7); animation: twinkle 2.4s ease-in-out infinite; }
-.theme .stars i:nth-child(1) { left: 2px;  top: 10px; }
-.theme .stars i:nth-child(2) { left: 12px; top: 2px;  animation-delay: -0.8s; width: 2px; height: 2px; }
-.theme .stars i:nth-child(3) { left: 19px; top: 13px; animation-delay: -1.5s; }
+.theme .stars i { position: absolute; width: 2px; height: 2px; border-radius: 50%; background: #fff; box-shadow: 0 0 4px 1px rgba(255, 255, 255, 0.7); animation: twinkle 2.4s ease-in-out infinite; }
+.theme .stars i:nth-child(1) { left: 1px;  top: 8px; }
+.theme .stars i:nth-child(2) { left: 9px;  top: 1px;  animation-delay: -0.8s; }
+.theme .stars i:nth-child(3) { left: 15px; top: 10px; animation-delay: -1.5s; }
 @keyframes twinkle { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.35; transform: scale(0.65); } }
-.theme .cloud { right: 9px; bottom: 8px; width: 20px; height: 8px; border-radius: 8px; background: #fff; opacity: 0.95; transform: none; }
-.theme .cloud::before { content: ""; position: absolute; left: 4px; top: -5px; width: 10px; height: 10px; border-radius: 50%; background: #fff; }
-.theme[aria-checked="true"] .cloud { opacity: 0; transform: translateY(14px); }
+.theme .cloud { right: 7px; bottom: 6px; width: 14px; height: 6px; border-radius: 6px; background: #fff; opacity: 0.95; transform: none; }
+.theme .cloud::before { content: ""; position: absolute; left: 3px; top: -4px; width: 8px; height: 8px; border-radius: 50%; background: #fff; }
+.theme[aria-checked="true"] .cloud { opacity: 0; transform: translateY(10px); }
 
 .theme .knob {
   position: absolute;
-  top: 4px;
-  left: 4px;
-  width: 28px;
-  height: 28px;
+  top: 3px;
+  left: 3px;
+  width: 21px;
+  height: 21px;
   border-radius: 50%;
   background: #ffd45c;
-  box-shadow: 0 2px 7px rgba(0, 0, 0, 0.28), inset 0 -2px 4px rgba(0, 0, 0, 0.08);
+  box-shadow: 0 1px 5px rgba(0, 0, 0, 0.28), inset 0 -2px 3px rgba(0, 0, 0, 0.08);
   transition: left 0.7s cubic-bezier(.34, 1.56, .64, 1), background-color 0.5s ease;
 }
-.theme[aria-checked="true"] .knob { left: calc(100% - 32px); background: #dde6f2; }
+.theme[aria-checked="true"] .knob { left: calc(100% - 24px); background: #dde6f2; }
 .theme .knob svg {
   position: absolute;
-  inset: 5px;
-  width: 18px;
-  height: 18px;
+  inset: 3.5px;
+  width: 14px;
+  height: 14px;
   fill: none;
   stroke-linecap: round;
   stroke-linejoin: round;
@@ -200,15 +343,15 @@ body {
 @media (prefers-reduced-motion: reduce) {
   .theme .knob, .theme .knob svg, .theme .stars, .theme .cloud { transition-duration: 0.01s; }
   .theme.pop .ring, .theme.pop .knob, .theme .stars i { animation: none; }
+  .msg { animation: none; }
+  .thread { scroll-behavior: auto; }
+  .caption, .caption .w { transition-duration: 0.01s; }
 }
 </style>
-</head>
-<body>
-
 <canvas id="orb" role="img" aria-label="Voice orb. Tap to start or stop speaking."></canvas>
 <p id="nogl" hidden>This page needs WebGL 2 to draw the orb. Open it in a current version of Chrome, Safari, Edge or Firefox.</p>
 
-<button id="theme" class="theme" type="button" role="switch" aria-checked="false" aria-label="Switch to dark mode" title="Switch theme">
+<button id="theme" class="theme" type="button" role="switch" aria-checked="true" aria-label="Switch to light mode" title="Switch theme">
   <span class="sky day"></span>
   <span class="sky night"></span>
   <span class="stars" aria-hidden="true"><i></i><i></i><i></i></span>
@@ -220,16 +363,32 @@ body {
   <span class="ring" aria-hidden="true"></span>
 </button>
 
-<div class="dock">
-  <button id="toggle" type="button" aria-pressed="false">Speak</button>
-  <button id="listen" type="button" aria-pressed="false">Listen</button>
-  <button id="demo" type="button">Play sample speech</button>
-  <div class="audio-controls">
-    <input id="audio-file" type="file" accept="audio/*" aria-label="Choose a speech audio file">
-    <button id="audio-play" type="button" disabled>Play real audio</button>
+<details class="tools" id="tools">
+  <summary>Test controls</summary>
+  <div class="panel">
+    <button id="toggle" type="button" aria-pressed="false">Speak</button>
+    <button id="listen" type="button" aria-pressed="false">Listen</button>
+    <button id="demo" type="button">Play sample speech</button>
+    <div class="audio-controls">
+      <input id="audio-file" type="file" accept="audio/*" aria-label="Choose a speech audio file">
+      <button id="audio-play" type="button" disabled>Play real audio</button>
+    </div>
+    <p class="sample" id="sample">“Hello there! Watch how the colours dance as I speak. Every word has its own rhythm, and every pause lets the glass settle.”</p>
   </div>
-  <p class="sample" id="sample">“Hello there! Watch how the colours dance as I speak. Every word has its own rhythm, and every pause lets the glass settle.”</p>
+</details>
+
+<div class="caption" id="caption" aria-hidden="true"></div>
+
+<div class="thread" id="thread" role="log" aria-live="polite" aria-label="Conversation" tabindex="0"></div>
+
+<div class="dock" id="dock">
   <p id="state" aria-live="polite">Idle · tap the orb or press Space</p>
+  <form class="chat" id="chat" autocomplete="off">
+    <input id="msg" type="text" placeholder="Type a message…" aria-label="Message" enterkeyhint="send">
+    <button id="mic" class="mic" type="button" aria-pressed="false" aria-label="Talk with your voice" title="Talk with your voice">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>
+    </button>
+  </form>
 </div>
 
 <script>
@@ -244,6 +403,15 @@ body {
   var stateEl = document.getElementById("state");
   var themeBtn = document.getElementById("theme");
   var listenBtn = document.getElementById("listen");
+  var micBtn = document.getElementById("mic");
+  var chatForm = document.getElementById("chat");
+  var msgInput = document.getElementById("msg");
+  var threadEl = document.getElementById("thread");
+  var capEl = document.getElementById("caption");
+  var CAP_H = 48, CAP_GAP = 8;   // the caption band: two lines of text, then a small gap before the conversation
+  var dockEl = document.getElementById("dock");
+  // where the orb sits, as fractions of the screen (shared by the drawing loop and the thread layout)
+  var ORB_H = 0.34, ORB_W = 0.46, ORB_Y = 0.63;   // diameter vs height, diameter vs width, centre height from the bottom
   var knob = themeBtn.querySelector(".knob");
   var gl = canvas.getContext("webgl2", { antialias: false, alpha: false, powerPreference: "high-performance" });
   if (!gl) { document.getElementById("nogl").hidden = false; return; }
@@ -268,6 +436,8 @@ uniform float u_to;       // theme the wave is bringing in
 uniform float u_wave;     // 0..1 progress of the theme wave
 uniform vec2  u_origin;   // where the wave starts (the theme switch), device px
 uniform float u_maxd;     // distance from the origin to the farthest corner
+uniform float u_ripple;   // 0..1 how strongly rings leave the orb (speech energy, eased)
+uniform float u_rphase;   // ring clock: runs faster when the voice is louder
 out vec4 o;
 
 const float N = 2.0;        // exponent 2 = true circle at rest, true oval once stretched
@@ -304,8 +474,11 @@ float R(vec2 q) {
   vec2 d = max(abs(q), vec2(1e-4));
   float r = pow(pow(d.x, N) + pow(d.y, N), 1.0 / N);
   float th = atan(q.y, q.x + 1e-5);
-  float pert = (u_speak * (0.008 + 0.022 * u_level) + (1.0 - u_speak) * 0.004) *
-    (0.6 * sin(3.0 * th + u_time * 2.3) + 0.4 * sin(2.0 * th - u_time * 1.7 + 1.0));
+  // the outline carries three travelling lobes; while speaking they grow with the voice and the third one
+  // runs on the speech clock, so a louder voice sets them moving faster
+  float lobes = 0.6 * sin(3.0 * th + u_time * 2.3) + 0.4 * sin(2.0 * th - u_time * 1.7 + 1.0)
+              + u_speak * 0.25 * sin(5.0 * th - u_rphase * 10.0);
+  float pert = (u_speak * (0.006 + 0.014 * u_level) + (1.0 - u_speak) * 0.004) * lobes;
   return r / (1.0 + pert);
 }
 
@@ -567,6 +740,23 @@ void main() {
   float tight = 1.0 - smoothstep(0.95, 1.45, rs);
   float sh = 1.0 - (1.0 - wide * 0.55) * (1.0 - tight * 0.35);
   bg *= vec3(1.0 - sh * 0.30, 1.0 - sh * 0.30, 1.0 - sh * 0.28);
+  // ripples: soft rings leave the orb while it speaks, widening and fading as they go. They follow the orb's own
+  // outline, are fainter below it (where the caption and conversation live) and never draw over the glass.
+  if (u_ripple > 0.004) {
+    float dq = length(q);
+    float rip = 0.0;
+    for (int i = 0; i < 3; i++) {
+      float rph = fract(u_rphase + float(i) / 3.0);
+      float rad = 1.10 + rph * 1.35;
+      float wid = 0.045 + 0.11 * rph;
+      float amp = pow(1.0 - rph, 2.0) * smoothstep(0.0, 0.10, rph);
+      rip += exp(-pow((dq - rad) / wid, 2.0)) * amp;
+    }
+    rip *= u_ripple * mix(0.35, 1.0, smoothstep(-0.9, 0.2, q.y)) * smoothstep(1.0, 1.08, dq);
+    vec3 darkRip = bg + vec3(0.40, 0.72, 1.0) * rip * 0.085;
+    vec3 lightRip = mix(bg, vec3(0.42, 0.66, 0.70), clamp(rip * 0.12, 0.0, 1.0));
+    bg = mix(lightRip, darkRip, th);
+  }
   vec3 outc = col * alpha + bg * (1.0 - alpha);
 
   // the leading edge of the wave: a thin glowing ring (warm going to light, cool going to dark)
@@ -610,7 +800,7 @@ void main() {
 
   var U = {};
   ["u_res", "u_center", "u_a", "u_scale", "u_time", "u_speak", "u_level", "u_bands",
-   "u_listen", "u_from", "u_to", "u_wave", "u_origin", "u_maxd"].forEach(function (n) {
+   "u_listen", "u_from", "u_to", "u_wave", "u_origin", "u_maxd", "u_ripple", "u_rphase"].forEach(function (n) {
     U[n] = gl.getUniformLocation(prog, n);
   });
 
@@ -624,6 +814,22 @@ void main() {
     H = Math.max(1, Math.floor(r.height * DPR));
     if (canvas.width !== W || canvas.height !== H) { canvas.width = W; canvas.height = H; }
     gl.viewport(0, 0, W, H);
+    layoutThread();
+  }
+  // the thread starts below the orb's glow and ends just above the chatbox
+  function layoutThread() {
+    if (!threadEl || !dockEl) return;
+    var cr = canvas.getBoundingClientRect();
+    var orbR = Math.min(cr.height * ORB_H, cr.width * ORB_W) / 2;
+    var capTop = cr.height * (1 - ORB_Y) + orbR * 1.18;   // under the orb, clear of its widest wobble
+    capEl.style.top = capTop + "px";
+    capEl.style.height = CAP_H + "px";
+    var top = capTop + CAP_H + CAP_GAP;                     // the conversation starts below the caption band
+    var bottom = dockEl.getBoundingClientRect().top - 6;
+    var h = Math.max(0, bottom - top);
+    threadEl.style.top = top + "px";
+    threadEl.style.height = h + "px";
+    threadEl.style.display = h < 44 ? "none" : "";
   }
   window.addEventListener("resize", resize);
   resize();
@@ -632,8 +838,8 @@ void main() {
   // The wave itself is painted by the shader; here we run its clock, and flip the page's text and
   // button colours at the moment the wave reaches the controls.
   var root = document.documentElement;
-  var themeNow = 0;                 // theme currently shown or arriving (0 light, 1 dark)
-  var fromT = 0, toT = 0, wave = 1, waveStart = 0, waving = false;
+  var themeNow = 1;                 // theme currently shown or arriving (0 light, 1 dark). Dark is the default.
+  var fromT = 1, toT = 1, wave = 1, waveStart = 0, waving = false;
   var uiPending = false, uiDd = 0;
   var origin = [0, 0], maxd = 1;
   var waveDur = reduce ? 250 : 1500;
@@ -676,7 +882,7 @@ void main() {
     var oy = H - (r.top + r.height / 2 - cr.top) * DPR;
     origin = [ox, oy];
     maxd = Math.max(Math.hypot(ox, oy), Math.hypot(W - ox, oy), Math.hypot(ox, H - oy), Math.hypot(W - ox, H - oy));
-    var tr = btn.getBoundingClientRect();
+    var tr = chatForm.getBoundingClientRect();
     var tx = (tr.left + tr.width / 2 - cr.left) * DPR;
     var ty = H - (tr.top + tr.height / 2 - cr.top) * DPR;
     uiDd = Math.hypot(tx - ox, ty - oy) / maxd;   // normalised, same units as the shader's dd
@@ -688,7 +894,7 @@ void main() {
     uiPending = true;
   }
   themeBtn.addEventListener("click", function () { setTheme(!themeNow); });
-  applyUi(0);
+  applyUi(1);
 
   // ---- speaking state -------------------------------------------------
   var speaking = false;                         // what the app wants once listening is over
@@ -696,6 +902,7 @@ void main() {
   var speakMix = 0, level = 0, prog = 0;
   var sx = 1, vx = 0, sy = 1, vy = 0;
   var bandsSmooth = [0, 0, 0];
+  var rippleE = 0, rphase = 0, levelSlow = 0;   // ripple strength (slowly follows the voice) and its ring clock
   var externalLevel = null;   // set by a real audio source later
 
   function smooth(a, b, x) {
@@ -779,6 +986,7 @@ void main() {
       await audio.play();
       audioActive = true;
       audioPlayBtn.textContent = "Stop real audio";
+      endCaption();
       setSpeaking(true, true);
       stateEl.textContent = "Speaking · live audio analysis";
     } catch (err) {
@@ -845,8 +1053,10 @@ void main() {
       if (audioActive) stopAudio();
     }
     listening = on;
+    if (on) endCaption();
     listenBtn.textContent = on ? "Stop listening" : "Listen";
     listenBtn.setAttribute("aria-pressed", on ? "true" : "false");
+    micBtn.setAttribute("aria-pressed", on ? "true" : "false");
     // a little squeeze as the glass draws in (and a release when it lets go)
     vy += on ? -0.5 : 0.6;
     vx += on ? -0.5 : 0.6;
@@ -858,6 +1068,7 @@ void main() {
     if (!fromDemo && demoActive) stopDemo();
     if (!fromDemo && audioActive) stopAudio();
     speaking = !!on;
+    if (!speaking) endCaption();
     btn.textContent = speaking ? "Stop" : "Speak";
     btn.setAttribute("aria-pressed", speaking ? "true" : "false");
     stateEl.textContent = listening ? "Listening" : (speaking ? (demoActive ? "Speaking · voice demo" : "Speaking") : "Idle · tap the orb or press Space");
@@ -890,10 +1101,12 @@ void main() {
       demoStarted = true;
       boundaryAt = performance.now();
       setSpeaking(true, true);
+      startCaption(sampleText, Math.round(sampleText.length * 72));
     };
     utterance.onboundary = function (e) {
       if (token !== demoToken || !demoStarted || e.name === "sentence") return;
       boundarySeen = true;
+      capSync(e.charIndex);
       boundaryAt = performance.now();
       var remaining = sampleText.slice(e.charIndex);
       var match = remaining.match(/^[\p{L}']+/u);
@@ -938,9 +1151,117 @@ void main() {
   demoBtn.addEventListener("click", playDemo);
   btn.addEventListener("click", function () { setSpeaking(!speaking); });
   listenBtn.addEventListener("click", function () { setListening(!listening); });
-  canvas.addEventListener("click", function () { if (listening) setListening(false); else setSpeaking(!speaking); });
+  micBtn.addEventListener("click", function () { setListening(!listening); });
+
+  // ---- the conversation ----
+  var TUTOR_PLACEHOLDER = "This is where the tutor\u2019s reply will appear once a model is connected.";
+  var replyTimer = 0;
+  function addMessage(role, text) {
+    var el = document.createElement("div");
+    el.className = "msg " + (role === "user" ? "user" : "tutor");
+    el.textContent = text;
+    threadEl.appendChild(el);
+    while (threadEl.children.length > 200) threadEl.removeChild(threadEl.firstChild);
+    // newest message comes into view; older ones stay above, reachable by scrolling
+    threadEl.scrollTo({ top: threadEl.scrollHeight, behavior: reduce ? "auto" : "smooth" });
+    return el;
+  }
+  // ---- the live caption ----
+  // Words are grouped into short pages (about two lines) so the caption never grows past its band. Which word is being
+  // said comes from the voice when it reports word positions, and from an estimate of the pace otherwise.
+  var cap = { words: [], starts: [], pages: [], cum: [], tot: 1, page: -1, idx: -2, spans: {}, mode: "off", t0: 0, dur: 1 };
+  function capBuild(text) {
+    var re = /\S+/g, m, i;
+    cap.words = []; cap.starts = []; cap.cum = []; cap.pages = [];
+    while ((m = re.exec(text))) { cap.words.push(m[0]); cap.starts.push(m.index); }
+    var cur = [], len = 0, tot = 0;
+    for (i = 0; i < cap.words.length; i++) {
+      var w = cap.words[i];
+      if (cur.length && len + 1 + w.length > 58) { cap.pages.push(cur); cur = []; len = 0; }
+      cur.push(i); len += (len ? 1 : 0) + w.length;
+      tot += w.length + 2 + (/[.!?]$/.test(w) ? 6 : (/[,;:]$/.test(w) ? 3 : 0));
+      cap.cum.push(tot);
+    }
+    if (cur.length) cap.pages.push(cur);
+    cap.tot = Math.max(1, tot);
+  }
+  function capShowPage(p) {
+    cap.page = p;
+    cap.spans = {};
+    capEl.textContent = "";
+    cap.pages[p].forEach(function (wi, n) {
+      if (n) capEl.appendChild(document.createTextNode(" "));
+      var sp = document.createElement("span");
+      sp.className = "w";
+      sp.textContent = cap.words[wi];
+      capEl.appendChild(sp);
+      cap.spans[wi] = sp;
+    });
+  }
+  function capMark(k) {                       // k = the word being said; k = words.length means all are done
+    if (k === cap.idx || !cap.words.length) return;
+    cap.idx = k;
+    if (k < cap.words.length) {
+      for (var p = 0; p < cap.pages.length; p++) {
+        if (cap.pages[p].indexOf(k) > -1) { if (p !== cap.page) capShowPage(p); break; }
+      }
+    }
+    for (var wi in cap.spans) cap.spans[wi].className = "w" + (+wi < k ? " done" : (+wi === k ? " on" : ""));
+  }
+  function startCaption(text, durationMs) {
+    capBuild(text);
+    cap.page = -1; cap.idx = -2; cap.mode = "sim";
+    cap.t0 = performance.now(); cap.dur = Math.max(600, durationMs);
+    capEl.classList.add("on");
+    capMark(0);
+  }
+  function capSync(charIndex) {               // the voice has told us where it is
+    if (cap.mode === "off") return;
+    cap.mode = "voice";
+    var k = 0;
+    for (var i = 0; i < cap.starts.length; i++) { if (cap.starts[i] <= charIndex) k = i; else break; }
+    capMark(k);
+  }
+  function capTick(now) {                     // estimated pace, when nothing better is available
+    if (cap.mode !== "sim") return;
+    var f = Math.min(1, (now - cap.t0) / cap.dur) * cap.tot, k = 0;
+    while (k < cap.cum.length && cap.cum[k] <= f) k++;
+    capMark(k);
+  }
+  function endCaption() {
+    cap.mode = "off";
+    capEl.classList.remove("on");
+  }
+
+  // a reply from the tutor: shown in the thread and in the caption, and the orb speaks for roughly as long as it takes to say
+  function reply(text) {
+    addMessage("tutor", text);
+    var ms = Math.min(14000, 1500 + text.length * 50);
+    setSpeaking(true);
+    startCaption(text, ms - 900);
+    clearTimeout(replyTimer);
+    replyTimer = setTimeout(function () {
+      if (speaking && !demoActive && !audioActive) setSpeaking(false);
+    }, ms);
+  }
+  addMessage("tutor", "Hello! Which language would you like to practise today: English, Deutsch or Fran\u00e7ais?");
+  layoutThread();
+
+  // the chatbox: Enter sends. There is no model behind it yet, so a placeholder reply stands in; the text is also
+  // announced on window as an "orb:submit" event for the real app to pick up.
+  chatForm.addEventListener("submit", function (e) {
+    e.preventDefault();
+    var text = msgInput.value.trim();
+    if (!text) return;
+    msgInput.value = "";
+    addMessage("user", text);
+    window.dispatchEvent(new CustomEvent("orb:submit", { detail: { text: text } }));
+    clearTimeout(replyTimer);
+    replyTimer = setTimeout(function () { reply(TUTOR_PLACEHOLDER); }, 700);
+  });
   window.addEventListener("keydown", function (e) {
-    if (e.code === "Space" && e.target && e.target.tagName !== "BUTTON") {
+    var tg0 = e.target && e.target.tagName;
+    if (e.code === "Space" && tg0 !== "BUTTON" && tg0 !== "INPUT" && tg0 !== "SUMMARY" && !(e.target.closest && e.target.closest("#thread"))) {
       e.preventDefault();
       setSpeaking(!speaking);
     }
@@ -951,6 +1272,8 @@ void main() {
   window.orb = {
     speak: setSpeaking,
     listen: setListening,
+    addMessage: addMessage,   // addMessage("user" | "tutor", text): adds to the thread without speaking
+    reply: reply,             // reply(text): adds a tutor message and lets the orb speak it
     playDemo: playDemo,
     stopDemo: stopDemo,
     stopAudio: stopAudio,
@@ -991,6 +1314,11 @@ void main() {
     if (audioActive) externalLevel = readAudioEnergy();
     var tg = listening ? (0.10 + 0.06 * Math.sin(t * 1.6) + (externalLevel !== null ? 0.5 * externalLevel : 0)) : spk ? (externalLevel !== null ? externalLevel : (demoActive ? demoEnergy(now, t) : speechTarget(t))) : 0;
     level += (tg - level) * (1 - Math.exp(-dt * (tg > level ? 18 : 7)));
+    var rt = (speaking && !listening) ? (0.30 + 0.70 * level) : 0;
+    levelSlow += (level - levelSlow) * (1 - Math.exp(-dt * 4.5));
+    rippleE += (rt - rippleE) * (1 - Math.exp(-dt * 2.2));
+    rphase += dt * (0.14 + 0.30 * rippleE) * (reduce ? 0.5 : 1);
+    capTick(now);
     // Every ribbon has a separate envelope. Fast attack, controlled release.
     // Simulated modes use different rhythms; uploaded audio uses measured FFT bins.
     var targets = audioActive ? frequencyBands : (spk ? [
@@ -1005,21 +1333,25 @@ void main() {
     }
 
     // underdamped springs give the soft wobble and the slight sideways stretch
-    var stretch = (0.17 * speakMix + 0.05 * level) * amp;
+    // speaking: the orb stays a circle. It swells a little with the loudness (pulse) and is squeezed or stretched a
+    // little as the voice rises or falls away (jelly); the springs below ring that out into a soft wobble.
+    var onset = Math.max(-1, Math.min(1, (level - levelSlow) * 2.2));
+    var pulse = 0.018 * level * speakMix * amp;
+    var jelly = 0.032 * onset * speakMix * amp;
     // idle: a slow breath (both axes swell together) with two slower, offset drifts so it never feels mechanical
     var iw = (1 - speakMix) * amp;
     var breath = Math.sin(t * 1.25);
-    var txs = 1 + stretch - listenMix * (0.035 - 0.02 * level) + iw * (0.011 * breath + 0.005 * Math.sin(t * 0.8 + 1.2));
-    var tys = 1 - stretch * 0.5 - listenMix * (0.035 - 0.02 * level) + iw * (0.011 * Math.sin(t * 1.25 - 0.35) + 0.005 * Math.sin(t * 1.05 + 2.0));
-    var k = 110, c = 15, steps = 2, h = dt / steps;
+    var txs = 1 + pulse + jelly - listenMix * (0.035 - 0.02 * level) + iw * (0.011 * breath + 0.005 * Math.sin(t * 0.8 + 1.2));
+    var tys = 1 + pulse - jelly * 0.8 - listenMix * (0.035 - 0.02 * level) + iw * (0.011 * Math.sin(t * 1.25 - 0.35) + 0.005 * Math.sin(t * 1.05 + 2.0));
+    var k = 110 + 40 * speakMix, c = 15 - 3.5 * speakMix, steps = 2, h = dt / steps;   // only slightly springier while speaking
     for (var i = 0; i < steps; i++) {
       vx += (k * (txs - sx) - c * vx) * h; sx += vx * h;
       vy += (k * (tys - sy) - c * vy) * h; sy += vy * h;
     }
 
-    var orbD = Math.min(H * 0.44, W * 0.56);
+    var orbD = Math.min(H * ORB_H, W * ORB_W);
     gl.uniform2f(U.u_res, W, H);
-    gl.uniform2f(U.u_center, W * 0.5, H * 0.55);
+    gl.uniform2f(U.u_center, W * 0.5, H * ORB_Y);
     gl.uniform1f(U.u_a, orbD / 2);
     gl.uniform2f(U.u_scale, sx, sy);
     gl.uniform1f(U.u_time, t);
@@ -1032,6 +1364,8 @@ void main() {
     gl.uniform1f(U.u_wave, wave);
     gl.uniform2f(U.u_origin, origin[0], origin[1]);
     gl.uniform1f(U.u_maxd, maxd);
+    gl.uniform1f(U.u_ripple, rippleE * speakMix);
+    gl.uniform1f(U.u_rphase, rphase);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
     requestAnimationFrame(frame);
   }
@@ -1039,5 +1373,5 @@ void main() {
 })();
 </script>
 
-</body>
-</html>
+
+</body></html>
