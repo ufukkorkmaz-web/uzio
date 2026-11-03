@@ -367,21 +367,37 @@ body {
 }
 .intro-skip:hover { background: rgba(50,73,90,.82); }
 .intro-skip:focus-visible { outline: 2px solid #7fd0ff; outline-offset: 4px; }
+/* Staggered reveal: the input arrives first, then microphone, then the controls.
+   While the intro runs, the existing event handlers and layout remain untouched. */
 .intro-active .theme, .intro-active .tools, .intro-active .dock,
 .intro-active .thread, .intro-active .caption {
   opacity: 0;
   pointer-events: none;
 }
-.intro-revealing .theme, .intro-revealing .tools,
-.intro-revealing .dock, .intro-revealing .thread,
-.intro-revealing .caption {
-  opacity: 1;
-  transition: opacity .75s ease;
+.intro-active .chat input, .intro-active .mic, .intro-active #state {
+  opacity: 0;
+  transform: translateY(9px);
 }
+.intro-active .chat input, .intro-active .mic, .intro-active #state,
+.intro-active .dock, .intro-active .theme, .intro-active .tools,
+.intro-active .thread, .intro-active .caption {
+  transition: opacity .62s ease, transform .62s cubic-bezier(.2,.8,.2,1);
+}
+.intro-active.intro-show-chat .dock { opacity: 1; }
+.intro-active.intro-show-chat .chat input { opacity: 1; transform: none; }
+.intro-active.intro-show-mic .mic { opacity: 1; transform: none; }
+.intro-active.intro-show-tools #state,
+.intro-active.intro-show-tools .theme,
+.intro-active.intro-show-tools .tools,
+.intro-active.intro-show-tools .thread,
+.intro-active.intro-show-tools .caption { opacity: 1; transform: none; }
 @media (prefers-reduced-motion: reduce) {
   .intro-skip { display: none !important; }
   .intro-active .theme, .intro-active .tools, .intro-active .dock,
-  .intro-active .thread, .intro-active .caption { opacity: 1; pointer-events: auto; }
+  .intro-active .thread, .intro-active .caption,
+  .intro-active .chat input, .intro-active .mic, .intro-active #state {
+    opacity: 1; transform: none; pointer-events: auto; transition: none;
+  }
 }
 </style>
 <canvas id="orb" role="img" aria-label="Voice orb. Tap to start or stop speaking."></canvas>
@@ -448,7 +464,7 @@ body {
   var CAP_H = 48, CAP_GAP = 8;   // the caption band: two lines of text, then a small gap before the conversation
   var dockEl = document.getElementById("dock");
   // where the orb sits, as fractions of the screen (shared by the drawing loop and the thread layout)
-  var ORB_H = 0.34, ORB_W = 0.46, ORB_Y = 0.71;   // diameter vs height, diameter vs width, centre height from the bottom
+  var ORB_H = 0.30, ORB_W = 0.405, ORB_Y = 0.71;   // diameter vs height, diameter vs width, centre height from the bottom
   var knob = themeBtn.querySelector(".knob");
   var gl = canvas.getContext("webgl2", { antialias: false, alpha: false, powerPreference: "high-performance" });
   if (!gl) { document.getElementById("nogl").hidden = false; return; }
@@ -478,6 +494,7 @@ uniform float u_maxd;     // distance from the origin to the farthest corner
 uniform float u_ripple;   // 0..1 how strongly rings leave the orb (speech energy, eased)
 uniform float u_rphase;   // ring clock: runs faster when the voice is louder
 uniform float u_glint;    // one-shot glass reflection sweep at the end of the intro
+uniform float u_introColor; // 0..1: glass gains the orb palette during its awakening
 out vec4 o;
 
 const float N = 2.0;        // exponent 2 = true circle at rest, true oval once stretched
@@ -734,12 +751,12 @@ void main() {
   vec3 base = through * mix(idleTint, speakingTint, u_speak) * vec3(0.97, 0.985, 1.02);
   base += vec3(0.045, 0.050, 0.060) * milk * (1.0 - Ls);
   // from here on, col collects the light added to the glass
-  vec3 col = liquid(q) * regionMask * lowAmt * (1.0 - 0.55 * u_speak);
+  vec3 col = liquid(q) * regionMask * lowAmt * (1.0 - 0.55 * u_speak) * u_introColor;
 
   float spill = exp(-pow(s.y / 0.45, 2.0)) * exp(-pow(s.x / 0.9, 2.0));
   col += vec3(0.30, 0.22, 0.35) * spill * (0.07 + 0.10 * u_level * u_speak);
-  col += bandCol * 0.95 + blobs(sw) * blobW;
-  col += motes * 0.8 * (1.0 - Ls);   // dark backdrop: the lights glow
+  col += (bandCol * 0.95 + blobs(sw) * blobW) * u_introColor;
+  col += motes * 0.8 * (1.0 - Ls) * u_introColor;   // dark backdrop: the lights glow
 
   // light on the glass
   vec3 V = vec3(0.0, 0.0, 1.0);
@@ -762,7 +779,7 @@ void main() {
   float soft = exp(-(bx * bx + by * by) * 1.7);
   float arcs = (ring * 0.30 + sheen * 0.07) * (0.8 + 0.5 * u_level * u_speak);
   col += (arcs + soft * 0.11) * topMask * lit * vec3(0.86, 0.93, 1.0);
-  col += hear * lm;   // sound waves arriving
+  col += hear * lm * u_introColor;   // sound waves arriving
   // A brief diagonal specular reflection catches the curved glass as the intro ends.
   // The sweep is confined to the orb and gently fades at its silhouette.
   if (u_glint >= 0.0 && u_glint <= 1.0) {
@@ -807,13 +824,26 @@ void main() {
   // Use the same continuous six-stop colour ramp as the actual soundwave:
   // champagne / amber -> coral -> pink -> blue -> cyan -> violet.
   // Different paths around the screen keep every colour visible at once.
-  vec3 bottomColour = ramp(clamp(0.04 + 0.91 * uv.x + drift, 0.0, 1.0), uv.x - 0.5);
+  // Gather the orb's full palette beneath the central message field rather
+  // than distributing its most colorful tones across the far corners.
+  // The flowing color pockets remain subtle and drift slowly with speech.
+  float centerX = clamp((uv.x - 0.18) / 0.64, 0.0, 1.0);
+  float bottomPhase = clamp(0.02 + 0.96 * centerX + drift
+      + 0.055 * sin(centerX * 18.85 - u_time * 0.16)
+      + 0.028 * sin(centerX * 37.70 + u_time * 0.11), 0.0, 1.0);
+  vec3 bottomMain = ramp(bottomPhase, centerX - 0.5);
+  vec3 bottomAccent = ramp(clamp(bottomPhase + 0.15 * sin(centerX * 12.57 + 1.4), 0.0, 1.0), centerX - 0.5);
+  vec3 bottomColour = mix(bottomMain, bottomAccent, 0.30);
   vec3 topColour = ramp(clamp(0.93 - 0.84 * uv.x - drift, 0.0, 1.0), 0.5 - uv.x);
   vec3 leftColour = ramp(clamp(0.23 + 0.53 * uv.y + drift, 0.0, 1.0), -0.25);
   vec3 rightColour = ramp(clamp(0.76 - 0.55 * uv.y - drift, 0.0, 1.0), 0.25);
 
   // Weighted averaging prevents extra-bright corner intersections.
-  float bottomW = bottomEdge * 0.91;
+  // A broad, feathered pool peaks directly below "Type a message".
+  // The lower side edges retain a faint ambient wash, while 30% remains
+  // the maximum bottom-edge opacity (the other edges remain at 15%).
+  float centerPool = exp(-pow((uv.x - 0.50) / 0.30, 2.0));
+  float bottomW = bottomEdge * 0.91 * (0.30 + 0.70 * centerPool);
   float topW = topEdge * 0.54;
   float leftW = leftEdge * 0.66;
   float rightW = rightEdge * 0.66;
@@ -824,7 +854,11 @@ void main() {
 
   // Bass, mids and treble subtly shape the glow without tracking every syllable.
   float voiceColourEnergy = dot(u_floorBands, vec3(0.30, 0.40, 0.30));
-  float strength = u_floorLevel * (0.80 + 0.20 * voiceColourEnergy) * coverage * 0.76 * 0.15; // 15% of previous perimeter glow intensity
+  // Bottom edge glows at 30%; top, left and right stay at 15%.
+   // Blend the targets by edge weight so corners remain smooth, not over-bright.
+   float edgeOpacity = (bottomW * 0.30 + topW * 0.15
+                      + leftW * 0.15 + rightW * 0.15) / max(sumW, 0.0001);
+   float strength = u_floorLevel * (0.80 + 0.20 * voiceColourEnergy) * coverage * 0.76 * edgeOpacity;
   vec3 darkEdge = bg + edgeColour * strength * 0.80;
   // Translucent colour on the light theme; bright additive bloom on the dark theme.
   vec3 lightTint = mix(bg, edgeColour * 0.78 + vec3(0.30), 0.60);
@@ -891,7 +925,7 @@ void main() {
 
   var U = {};
   ["u_res", "u_center", "u_a", "u_scale", "u_time", "u_speak", "u_level", "u_bands",
-   "u_floorLevel", "u_floorBands", "u_glint", "u_listen", "u_from", "u_to", "u_wave", "u_origin", "u_maxd", "u_ripple", "u_rphase"].forEach(function (n) {
+   "u_floorLevel", "u_floorBands", "u_glint", "u_introColor", "u_listen", "u_from", "u_to", "u_wave", "u_origin", "u_maxd", "u_ripple", "u_rphase"].forEach(function (n) {
     U[n] = gl.getUniformLocation(prog, n);
   });
 
@@ -903,10 +937,8 @@ void main() {
   var introSkip = document.getElementById("intro-skip");
   var introActive = !reduce;
   var introStartedAt = performance.now();
-  var introRevealing = false;
-  var introEndAt = introStartedAt + INTRO_MS;
-  // Start near the final reveal and finish just after the interface settles.
-  var GLINT_START = 4050, GLINT_DURATION = 700;
+  // Keep the original 4.5s duration; the final glass reflection finishes before the end.
+  var GLINT_START = 3630, GLINT_DURATION = 710;
   var introWasSkipped = false;
   var introUi = [document.getElementById("theme"), document.getElementById("tools"), dockEl, threadEl];
   if (introActive) {
@@ -919,7 +951,7 @@ void main() {
     introActive = false;
     introSkip.hidden = true;
     canvas.style.pointerEvents = "";
-    document.documentElement.classList.remove("intro-active", "intro-revealing");
+    document.documentElement.classList.remove("intro-active", "intro-show-chat", "intro-show-mic", "intro-show-tools");
     introUi.forEach(function (el) { if (el) el.inert = false; });
     // Do not change any ordinary speaking, listening or theme state.
   }
@@ -934,25 +966,43 @@ void main() {
     return x * x * (3 - 2 * x);
   }
   function introVisual(now) {
-    if (!introActive) return { size: 1, speak: null, energy: 0, ripple: 0 };
+    if (!introActive) return { size: 1, speak: null, energy: 0, ripple: 0, color: 1, ambient: 0 };
     var elapsed = Math.max(0, now - introStartedAt);
     if (elapsed >= INTRO_MS) {
       finishIntro();
-      return { size: 1, speak: null, energy: 0, ripple: 0 };
+      return { size: 1, speak: null, energy: 0, ripple: 0, color: 1, ambient: 0 };
     }
     var t = elapsed / INTRO_MS;
-    // A point of light grows into glass, overshoots gently, then settles.
+    // Original point-of-light birth and gentle overshoot, retained.
     var size = t < .21 ? .018 + .11 * easeIntro(t / .21)
              : t < .60 ? .128 + .93 * easeIntro((t - .21) / .39)
              : t < .78 ? 1.058 - .058 * easeIntro((t - .60) / .18) : 1;
-    // The first soft wave travels through the sphere just after formation.
-    var pulse = Math.exp(-Math.pow((t - .68) / .105, 2));
-    // Reveal normal UI over the last 0.8 seconds, with orb fully formed.
-    if (t >= .82 && !introRevealing) {
-      introRevealing = true;
-      document.documentElement.classList.add("intro-revealing");
-    }
-    return { size: size, speak: .78 * pulse, energy: .60 * pulse, ripple: .62 * pulse };
+
+    // Two delicate glass heartbeats, each with a small pressure swell and
+    // outward ripple. The second is smaller, so the orb naturally settles.
+    var beat1 = Math.exp(-Math.pow((t - .58) / .040, 2));
+    var beat2 = Math.exp(-Math.pow((t - .715) / .045, 2));
+    var heartbeat = beat1 + 0.60 * beat2;
+    size *= 1 + 0.018 * beat1 + 0.011 * beat2;
+
+    // Interior color gradually blooms after glass formation, without
+    // suppressing the neutral glass reflections or background theme.
+    var color = easeIntro((t - .26) / .41);
+
+    // Ambient light reaches the bottom edge in time with the pulses, then
+    // gently fades before handing control to the existing speech glow.
+    var arrive = easeIntro((t - .47) / .16);
+    var depart = 1 - easeIntro((t - .78) / .22);
+    var ambient = (0.38 + 0.22 * beat1 + 0.14 * beat2) * arrive * depart;
+
+    // Reveal the real controls in sequence; no duplicated overlay controls.
+    var root = document.documentElement;
+    if (t >= .74) root.classList.add("intro-show-chat");
+    if (t >= .81) root.classList.add("intro-show-mic");
+    if (t >= .87) root.classList.add("intro-show-tools");
+
+    return { size: size, speak: .60 * heartbeat, energy: .48 * heartbeat,
+             ripple: .50 * heartbeat, color: color, ambient: ambient };
   }
 
   var W = 1, H = 1, DPR = 1;
@@ -1520,7 +1570,7 @@ void main() {
     gl.uniform1f(U.u_speak, intro.speak === null ? speakMix : Math.max(speakMix, intro.speak));
     gl.uniform1f(U.u_level, Math.max(level, intro.energy));
     gl.uniform3f(U.u_bands, bandsSmooth[0], bandsSmooth[1], bandsSmooth[2]);
-    gl.uniform1f(U.u_floorLevel, floorLevel);
+    gl.uniform1f(U.u_floorLevel, Math.max(floorLevel, intro.ambient));
     gl.uniform3f(U.u_floorBands, floorBands[0], floorBands[1], floorBands[2]);
     gl.uniform1f(U.u_listen, listenMix);
     gl.uniform1f(U.u_from, fromT);
@@ -1535,6 +1585,7 @@ void main() {
     var glint = (!reduce && !introWasSkipped && glintTime >= 0 && glintTime <= GLINT_DURATION)
       ? glintTime / GLINT_DURATION : -1;
     gl.uniform1f(U.u_glint, glint);
+    gl.uniform1f(U.u_introColor, intro.color);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
     requestAnimationFrame(frame);
   }
