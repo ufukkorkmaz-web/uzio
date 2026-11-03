@@ -1,0 +1,546 @@
+<!doctype html><html><head><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover"><style>:root{color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html{scroll-padding-top:env(safe-area-inset-top,0px)}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#fff;color:#000}img{max-width:100%}[hidden]:not([hidden=until-found i]){display:none!important}</style></head><body>
+<title>Liquid Glass Orb</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Manrope:wght@500;600&display=swap">
+<style>
+/* Layout: a full-bleed milk-white stage. One WebGL canvas holds the orb, centred slightly above the middle.
+   A single control sits at the bottom edge. Deliberately single-theme (the shader paints the same milk white). */
+:root {
+  --bg: #f4f2ee;
+  --fg: #1d1c22;
+  --fg-dim: #77747f;
+  --line: rgba(0, 0, 0, 0.14);
+  --fill: rgba(0, 0, 0, 0.045);
+  --fill-hover: rgba(0, 0, 0, 0.085);
+  --accent: #c9742a;
+  --font-ui: "Manrope", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  color-scheme: light;
+}
+html, body { height: 100%; }
+body {
+  box-sizing: border-box;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--font-ui);
+  padding-block: 0;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  overflow: hidden;
+}
+#orb {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  background: var(--bg);
+  cursor: pointer;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+.dock {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding-top: 0;
+  padding-bottom: calc(28px + env(safe-area-inset-bottom, 0px));
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  pointer-events: none;
+}
+.dock > * { pointer-events: auto; }
+.swatches { display: flex; gap: 12px; }
+.sw {
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border-radius: 50%;
+  background: var(--c);
+  border: 1px solid var(--line);
+  cursor: pointer;
+}
+.sw[aria-pressed="true"] { outline: 2px solid var(--fg); outline-offset: 3px; }
+.sw:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+#toggle {
+  font: 600 15px/1 var(--font-ui);
+  letter-spacing: 0.02em;
+  color: var(--fg);
+  background: var(--fill);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 14px 30px;
+  min-width: 132px;
+  cursor: pointer;
+  -webkit-backdrop-filter: blur(14px);
+  backdrop-filter: blur(14px);
+  transition: background 0.2s ease, border-color 0.2s ease;
+}
+#toggle:hover { background: var(--fill-hover); }
+#toggle[aria-pressed="true"] { border-color: rgba(201, 116, 42, 0.6); }
+#toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+#state {
+  margin: 0;
+  font: 500 12px/1.4 var(--font-ui);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--fg-dim);
+  text-align: center;
+}
+#nogl {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0;
+  padding: 24px;
+  text-align: center;
+  color: var(--fg-dim);
+  font: 500 15px/1.5 var(--font-ui);
+}
+</style>
+
+<canvas id="orb" role="img" aria-label="Voice orb. Tap to start or stop speaking."></canvas>
+<p id="nogl" hidden>This page needs WebGL 2 to draw the orb. Open it in a current version of Chrome, Safari, Edge or Firefox.</p>
+<div class="dock">
+  <div class="swatches" role="group" aria-label="Background">
+    <button class="sw" type="button" data-bg="#f4f2ee" style="--c:#f4f2ee" aria-label="Milk" title="Milk" aria-pressed="true"></button>
+    <button class="sw" type="button" data-bg="#d8c4a3" style="--c:#d8c4a3" aria-label="Sand" title="Sand" aria-pressed="false"></button>
+    <button class="sw" type="button" data-bg="#c4d8ec" style="--c:#c4d8ec" aria-label="Sky" title="Sky" aria-pressed="false"></button>
+    <button class="sw" type="button" data-bg="#3b3f4c" style="--c:#3b3f4c" aria-label="Slate" title="Slate" aria-pressed="false"></button>
+    <button class="sw" type="button" data-bg="#000000" style="--c:#000000" aria-label="Black" title="Black" aria-pressed="false"></button>
+  </div>
+  <button id="toggle" type="button" aria-pressed="false">Speak</button>
+  <p id="state" aria-live="polite">Idle · tap the orb or press Space</p>
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  var canvas = document.getElementById("orb");
+  var btn = document.getElementById("toggle");
+  var stateEl = document.getElementById("state");
+  var gl = canvas.getContext("webgl2", { antialias: false, alpha: false, powerPreference: "high-performance" });
+  if (!gl) { document.getElementById("nogl").hidden = false; return; }
+
+  var VS = `#version 300 es
+in vec2 a;
+void main() { gl_Position = vec4(a, 0.0, 1.0); }`;
+
+  var FS = `#version 300 es
+precision highp float;
+uniform vec2  u_res;
+uniform vec2  u_center;
+uniform float u_a;        // radius of the resting circle in device px
+uniform vec2  u_scale;    // spring-driven stretch (x, y)
+uniform float u_time;
+uniform float u_speak;    // 0 idle .. 1 speaking (eased)
+uniform float u_level;    // 0..1 speech energy
+uniform vec3  u_bg;       // colour of the surroundings; the glass adapts to it
+out vec4 o;
+
+const float N = 2.0;        // exponent 2 = true circle at rest, true oval once stretched
+
+float hash(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
+
+// smoothstep that tolerates reversed edges
+float sd(float a, float b, float x) {
+  return a < b ? smoothstep(a, b, x) : 1.0 - smoothstep(b, a, x);
+}
+
+// the surroundings: flat colour with a faint pool of light from above.
+// On dark colours the pool is a cool glow (so a shadow has something to fall on); on light colours it is a gentle brightening.
+vec3 bgAt(vec2 uv) {
+  vec2 bd = vec2((uv.x - 0.5) * u_res.x / u_res.y, uv.y - 1.0);
+  float pool = exp(-1.5 * dot(bd, bd));
+  float L = dot(u_bg, vec3(0.299, 0.587, 0.114));
+  return u_bg * (0.965 + 0.045 * pool) + vec3(0.60, 0.70, 1.0) * 0.065 * pool * (1.0 - L) * (1.0 - L);
+}
+
+// radial distance to the orb outline (1.0 on the edge), with a soft ripple while speaking
+float R(vec2 q) {
+  vec2 d = max(abs(q), vec2(1e-4));
+  float r = pow(pow(d.x, N) + pow(d.y, N), 1.0 / N);
+  float th = atan(q.y, q.x + 1e-5);
+  float pert = (u_speak * (0.008 + 0.022 * u_level) + (1.0 - u_speak) * 0.004) *
+    (0.6 * sin(3.0 * th + u_time * 2.3) + 0.4 * sin(2.0 * th - u_time * 1.7 + 1.0));
+  return r / (1.0 + pert);
+}
+
+vec3 ramp(float u, float x) {
+  vec3 c0 = vec3(1.00, 0.92, 0.76);
+  vec3 c1 = vec3(1.00, 0.50, 0.14);
+  vec3 c2 = vec3(0.98, 0.34, 0.46);
+  vec3 c3 = vec3(0.28, 0.46, 1.00);
+  vec3 c4 = vec3(0.22, 0.80, 0.96);
+  vec3 c5 = vec3(0.52, 0.30, 0.92);
+  vec3 c = c0;
+  c = mix(c, c1, smoothstep(0.00, 0.16, u));
+  c = mix(c, c2, smoothstep(0.14, 0.32, u));
+  c = mix(c, c3, smoothstep(0.30, 0.52, u));
+  c = mix(c, c4, smoothstep(0.50, 0.74, u));
+  c = mix(c, c5, smoothstep(0.72, 1.05, u));
+  c = mix(c, vec3(0.62, 0.35, 0.95), smoothstep(0.25, 1.0, x) * 0.35 * smoothstep(0.3, 0.9, u));
+  return c;
+}
+
+// slow liquid colour for the lower glass, drawn from the same palette as the glow.
+// Speaking lowers the spatial frequency and the speed so it blurs into the soundwave.
+vec3 liquid(vec2 p) {
+  float t = u_time * mix(1.0, 0.7, u_speak);
+  p *= mix(1.0, 0.7, u_speak);
+  vec2 w = p;
+  w += 0.18 * vec2(sin(p.y * 2.3 + t * 0.35), cos(p.x * 2.1 - t * 0.30));
+  w += 0.10 * vec2(sin(w.y * 4.1 - t * 0.50 + 1.3), cos(w.x * 3.7 + t * 0.42));
+  float k  = 0.5 + 0.5 * sin(w.x * 2.2 + w.y * 1.6 + t * 0.25);
+  float k2 = 0.5 + 0.5 * sin(w.x * 1.4 - w.y * 2.3 - t * 0.20 + 2.0);
+  return 0.5 * (ramp(0.15 + 0.70 * k, p.x) + ramp(0.20 + 0.70 * k2, -p.x));
+}
+
+// idle: five soft glowing blobs of the soundwave colours roam freely through the whole orb.
+// Speaking: each one flies back to its place along the wave, flattens out, and the ribbon takes over.
+vec3 blobs(vec2 s) {
+  float t = u_time;
+  float k = 1.0 - u_speak;
+  vec3 acc = vec3(0.0);
+  for (int i = 0; i < 7; i++) {
+    float fi = float(i);
+    vec2 roam = vec2(0.66 * sin(t * (0.17 + 0.040 * fi) + fi * 1.9),
+                     0.58 * sin(t * (0.15 + 0.034 * fi) + fi * 2.7 + 1.0));
+    roam += 0.12 * vec2(sin(t * 0.43 + fi * 3.1), cos(t * 0.37 + fi * 1.3));
+    float hx = -0.72 + 0.24 * fi;
+    vec2 home = vec2(hx, -0.02 + 0.09 * (1.0 - hx * hx) - 0.04 * hx);
+    // each blob sets off a little after the one before it, and travels on a curve rather than a straight line
+    float m = 1.0 - smoothstep(0.02 * fi, 0.70 + 0.02 * fi, u_speak);
+    vec2 dv = home - roam;
+    vec2 pos = mix(home, roam, m) + 0.72 * m * (1.0 - m) * 0.30 * vec2(-dv.y, dv.x);
+    vec2 d = s - pos;
+    // they stretch into the flat line only once most of the way home
+    vec2 sc = mix(vec2(0.40, 0.34), vec2(0.27, 0.10), smoothstep(0.30, 0.90, u_speak));
+    sc *= 1.0 + 0.22 * k * sin(t * 0.21 + fi * 2.0);
+    vec2 n2 = d / sc;
+    float g = exp(-dot(n2, n2) * 1.3);
+    float u = 0.12 + 0.13 * fi;                  // orange, pink, blue, cyan, violet
+    vec3 c = ramp(u, hx) * g + vec3(1.0, 0.86, 0.66) * g * g * g * 0.22;
+    acc += c;
+  }
+  return acc * 0.46 *(1.0 + 0.07 * sin(t * 1.25) * k);
+}
+
+// the spectrum glow: a soft arc at rest, a ribbon of sound while speaking
+vec3 band(vec2 s, float ph) {
+  float x = s.x;
+  float bell = exp(-pow((x + 0.06) / 0.80, 2.0));
+  float env  = exp(-pow(x / 0.66, 2.0));
+  float A = u_speak * (0.035 + 0.17 * u_level) * env;
+  float wave = A * (0.62 * sin(x * 7.0 + u_time * 5.2 + ph)
+                  + 0.38 * sin(x * 12.5 - u_time * 7.1 + 2.0 * ph + 1.3));
+  float yc = -0.02 + 0.09 * (1.0 - x * x) - 0.04 * x + wave
+           + 0.012 * sin(u_time * 0.6 + x * 2.0 + ph);
+  float th = mix(0.33, 0.13, u_speak);
+  float u = (yc - s.y) / th;
+  float below = smoothstep(-0.08, 0.06, u) * exp(-pow(max(u, 0.0) / 0.95, 2.0));
+  // glow hugs the top edge only; it used to stay at full strength below the wave, which was the gold-brown wash
+  float aboveEdge = 1.0 - smoothstep(0.0, 0.12, u);
+  float glow = exp(-abs(u) * 7.0) * 0.45 * aboveEdge + exp(-abs(u) * 2.2) * 0.12 * (1.0 - u_speak);
+  float edge = exp(-u * u * 70.0);
+  vec3 col = ramp(max(u, 0.0), x) * below
+           + vec3(1.0, 0.72, 0.42) * glow * (1.0 - 0.2 * u_speak)
+           + vec3(1.0, 0.95, 0.85) * edge * 0.7;
+  float breathe = 1.0 + 0.07 * sin(u_time * 1.25) * (1.0 - u_speak);
+  return col * bell * (0.80 + 0.55 * u_level * u_speak) * breathe;
+}
+
+void main() {
+  vec2 p = gl_FragCoord.xy - u_center;
+  float a = u_a * u_scale.x;
+  float b = u_a * u_scale.y;
+  vec2 q = p / vec2(a, b);
+
+  float r = R(q);
+  float fw = max(fwidth(r), 1e-4);
+  float alpha = 1.0 - smoothstep(1.0 - fw, 1.0 + fw, r);
+  float rc = min(r, 1.0);
+
+  // surface normal of a shallow dome
+  float e = 0.012;
+  vec2 g = vec2(R(q + vec2(e, 0.0)) - R(q - vec2(e, 0.0)),
+                R(q + vec2(0.0, e)) - R(q - vec2(0.0, e)));
+  vec2 gd = g / max(length(g), 1e-5);
+  float edgeAmt = smoothstep(0.35, 1.0, rc);
+  vec3 n = normalize(vec3(gd * edgeAmt * 0.95, sqrt(max(1.0 - rc * rc * rc * 0.9, 0.04))));
+
+  // lens: magnify toward the middle, no flipped view at the rim (that made a coloured edge)
+  float mag = mix(0.78, 1.0, rc * rc);
+  vec2 s = q * mag;
+  vec2 sw = s;
+  // the blobs do the travelling; the ribbon only takes over once they have lined up
+  float bandW = smoothstep(0.60, 1.00, u_speak);
+  float blobW = 1.0 - smoothstep(0.55, 0.97, u_speak);
+
+  // spectrum glow seen through the lens, with slight colour dispersion
+  float disp = 0.012 + 0.03 * rc * rc;
+  vec3 bandCol = vec3(0.0);
+  for (int i = 0; i < 3; i++) {
+    float w = bandW;
+    if (i == 1) w = 0.5 * u_speak * bandW;
+    if (i == 2) w = 0.3 * u_speak * bandW;
+    if (w <= 0.0) continue;
+    float ph = float(i) * 1.7;
+    vec3 c;
+    c.r = band(sw * (1.0 + disp), ph).r;
+    c.g = band(sw, ph).g;
+    c.b = band(sw * (1.0 - disp), ph).b;
+    bandCol += c * w;
+  }
+
+  // smoked top; lower half is cool neutral glass with slow liquid colour flowing in it
+  vec3 smoke = mix(vec3(0.008, 0.009, 0.012), vec3(0.040, 0.042, 0.052), sd(0.25, -0.75, q.y));
+  float milk = sd(-0.05, -0.95, q.y) * (0.35 + 0.65 * rc);
+  // idle: colour flows through the whole orb; speaking: it settles into the lower half, softer
+  float lowMask = sd(-0.08, -0.90, q.y);
+  float regionMask = mix(0.70 + 0.30 * lowMask, lowMask, u_speak);
+  float lowAmt = mix(0.15, 0.065, u_speak);
+  // the glass takes on its surroundings: the lower body shows the backdrop through the lens,
+  // the top stays smoked, and the edge reads a little darker where the glass is thick
+  float L = dot(u_bg, vec3(0.299, 0.587, 0.114));
+  float Ls = smoothstep(0.12, 0.55, L);
+  vec3 through = bgAt((u_center + p * 0.82) / u_res);
+  through *= 1.0 - 0.12 * smoothstep(0.55, 1.0, rc);
+  float lowW = sd(0.45, -0.30, q.y);
+  // the smoked upper glass is the surroundings tinted darker, so it follows the background too
+  vec3 base = through * mix(0.76, 0.94, lowW) * vec3(0.97, 0.985, 1.02);
+  base += vec3(0.045, 0.050, 0.060) * milk * (1.0 - Ls);
+  // from here on, col collects the light added to the glass
+  vec3 col = liquid(q) * regionMask * lowAmt * (1.0 - u_speak);
+
+  float spill = exp(-pow(s.y / 0.45, 2.0)) * exp(-pow(s.x / 0.9, 2.0));
+  col += vec3(0.30, 0.22, 0.35) * spill * (0.07 + 0.10 * u_level * u_speak);
+  col += bandCol * 0.95 + blobs(sw) * blobW;
+
+  // light on the glass
+  vec3 V = vec3(0.0, 0.0, 1.0);
+  vec3 L1 = normalize(vec3(-0.45, 0.60, 0.65));
+  vec3 L2 = normalize(vec3(0.35, -0.75, 0.55));
+  float s1 = pow(max(dot(n, normalize(L1 + V)), 0.0), 70.0);
+  float s2 = pow(max(dot(n, normalize(L2 + V)), 0.0), 38.0);
+  float down = sd(0.35, -0.85, gd.y);
+  col += s1 * 0.32 * vec3(0.85, 0.92, 1.0);
+  col += s2 * 0.40 * vec3(0.90, 0.95, 1.0) * (0.5 + 0.5 * down);
+
+  // light from above: a soft window-like reflection high on the glass and a bright inner arc under the
+  // top edge. Present at rest, stronger while speaking.
+  float lit = 0.62 + 0.38 * u_speak;
+  float topMask = sd(0.10, 0.70, q.y) * exp(-pow(q.x / 0.80, 2.0));
+  float ring = exp(-pow((rc - 0.86 - 0.012 * sin(u_time * 1.7)) / 0.04, 2.0));
+  float sheen = exp(-pow((rc - 0.79) / 0.13, 2.0));
+  float bx = q.x / 0.58;
+  float by = (q.y - 0.56 - 0.01 * sin(u_time * 1.25)) / 0.17;
+  float soft = exp(-(bx * bx + by * by) * 1.7);
+  float arcs = (ring * 0.30 + sheen * 0.07) * (0.8 + 0.5 * u_level * u_speak);
+  col += (arcs + soft * 0.11) * topMask * lit * vec3(0.86, 0.93, 1.0);
+  // dark surroundings: the colour glows, adding light to the glass.
+  // light surroundings: the colour sits in the glass like ink, so it stays visible on a bright backdrop.
+  vec3 darkRes = 1.0 - exp(-(base + col) * 1.4);
+  float em = max(col.r, max(col.g, col.b));
+  vec3 hue = col / max(em, 1e-4);
+  float inkA = 1.0 - exp(-em * 1.6);
+  vec3 lightRes = mix(base, hue * 0.94, inkA * 0.92);
+  col = mix(darkRes, lightRes, Ls);
+
+  // outside the glass: the surroundings, with the orb's shadow falling on them
+  vec2 uv = gl_FragCoord.xy / u_res;
+  vec3 bg = bgAt(uv);
+  float rs = length(q + vec2(0.0, 0.18));
+  float wide = 1.0 - smoothstep(0.9, 2.6, rs);
+  float tight = 1.0 - smoothstep(0.95, 1.45, rs);
+  float sh = 1.0 - (1.0 - wide * 0.55) * (1.0 - tight * 0.35);
+  bg *= vec3(1.0 - sh * 0.30, 1.0 - sh * 0.30, 1.0 - sh * 0.28);
+  vec3 outc = col * alpha + bg * (1.0 - alpha);
+  outc += (hash(gl_FragCoord.xy + fract(u_time)) - 0.5) * (1.5 / 255.0);
+  o = vec4(outc, 1.0);
+}`;
+
+  function compile(type, src) {
+    var sh = gl.createShader(type);
+    gl.shaderSource(sh, src);
+    gl.compileShader(sh);
+    if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) {
+      console.error(gl.getShaderInfoLog(sh));
+      return null;
+    }
+    return sh;
+  }
+  var vs = compile(gl.VERTEX_SHADER, VS), fs = compile(gl.FRAGMENT_SHADER, FS);
+  var prog = gl.createProgram();
+  if (!vs || !fs) { document.getElementById("nogl").hidden = false; return; }
+  gl.attachShader(prog, vs);
+  gl.attachShader(prog, fs);
+  gl.linkProgram(prog);
+  if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
+    console.error(gl.getProgramInfoLog(prog));
+    document.getElementById("nogl").hidden = false;
+    return;
+  }
+  gl.useProgram(prog);
+
+  var buf = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
+  var loc = gl.getAttribLocation(prog, "a");
+  gl.enableVertexAttribArray(loc);
+  gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
+
+  var U = {};
+  ["u_res", "u_center", "u_a", "u_scale", "u_time", "u_speak", "u_level", "u_bg"].forEach(function (n) {
+    U[n] = gl.getUniformLocation(prog, n);
+  });
+
+  var reduce = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  var W = 1, H = 1, DPR = 1;
+
+  function resize() {
+    DPR = Math.min(window.devicePixelRatio || 1, 2);
+    var r = canvas.getBoundingClientRect();
+    W = Math.max(1, Math.floor(r.width * DPR));
+    H = Math.max(1, Math.floor(r.height * DPR));
+    if (canvas.width !== W || canvas.height !== H) { canvas.width = W; canvas.height = H; }
+    gl.viewport(0, 0, W, H);
+  }
+  window.addEventListener("resize", resize);
+  resize();
+
+  // ---- surroundings: the orb and the page follow the background colour ----
+  var root = document.documentElement;
+  function parseColor(str) {
+    var el = document.createElement("span");
+    el.style.color = String(str).trim();
+    document.body.appendChild(el);
+    var m = getComputedStyle(el).color.match(/[\d.]+/g) || [244, 242, 238];
+    document.body.removeChild(el);
+    return [m[0] / 255, m[1] / 255, m[2] / 255];
+  }
+  var bgCur = parseColor(getComputedStyle(root).getPropertyValue("--bg") || "#f4f2ee");
+  var bgTarget = bgCur.slice();
+  var bgShown = "";
+  function lumOf(c) { return 0.299 * c[0] + 0.587 * c[1] + 0.114 * c[2]; }
+  // keep the page colour and the text and button colours in step with the orb's surroundings
+  function applyUi(c) {
+    var key = c.map(function (v) { return Math.round(v * 255); }).join(",");
+    if (key === bgShown) return;
+    bgShown = key;
+    var dark = lumOf(c) < 0.45, st = root.style;
+    st.setProperty("--bg", "rgb(" + key + ")");
+    st.setProperty("--fg", dark ? "#ecebf2" : "#1d1c22");
+    st.setProperty("--fg-dim", dark ? "#8d8b99" : "#77747f");
+    st.setProperty("--line", dark ? "rgba(255,255,255,0.16)" : "rgba(0,0,0,0.14)");
+    st.setProperty("--fill", dark ? "rgba(255,255,255,0.07)" : "rgba(0,0,0,0.045)");
+    st.setProperty("--fill-hover", dark ? "rgba(255,255,255,0.12)" : "rgba(0,0,0,0.085)");
+    st.setProperty("--accent", dark ? "#ffb56e" : "#c9742a");
+    st.setProperty("color-scheme", dark ? "dark" : "light");
+  }
+  var swatches = Array.prototype.slice.call(document.querySelectorAll(".sw"));
+  function setBackground(css, btn) {
+    bgTarget = parseColor(css);
+    swatches.forEach(function (s) { s.setAttribute("aria-pressed", s === btn ? "true" : "false"); });
+  }
+  swatches.forEach(function (s) {
+    s.addEventListener("click", function () { setBackground(s.getAttribute("data-bg"), s); });
+  });
+  applyUi(bgCur);
+
+  // ---- speaking state -------------------------------------------------
+  var speaking = false;
+  var speakMix = 0, level = 0, prog = 0;
+  var sx = 1, vx = 0, sy = 1, vy = 0;
+  var externalLevel = null;   // set by a real audio source later
+
+  function smooth(a, b, x) {
+    x = Math.min(1, Math.max(0, (x - a) / (b - a)));
+    return x * x * (3 - 2 * x);
+  }
+  // stand-in for speech energy: syllable rhythm with short pauses between phrases
+  function speechTarget(t) {
+    var phrase = smooth(-0.9, -0.55, Math.sin(t * 1.35 + 0.8 * Math.sin(t * 0.4)));
+    var syl = 0.5 + 0.5 * Math.sin(t * 23.9 + 2.0 * Math.sin(t * 1.7));
+    var syl2 = 0.5 + 0.5 * Math.sin(t * 38.0 + 1.0);
+    return phrase * (0.22 + 0.55 * syl + 0.23 * syl2);
+  }
+
+  function setSpeaking(on) {
+    speaking = !!on;
+    btn.textContent = speaking ? "Stop" : "Speak";
+    btn.setAttribute("aria-pressed", speaking ? "true" : "false");
+    stateEl.textContent = speaking ? "Speaking" : "Idle · tap the orb or press Space";
+  }
+  btn.addEventListener("click", function () { setSpeaking(!speaking); });
+  canvas.addEventListener("click", function () { setSpeaking(!speaking); });
+  window.addEventListener("keydown", function (e) {
+    if (e.code === "Space" && e.target && e.target.tagName !== "BUTTON") {
+      e.preventDefault();
+      setSpeaking(!speaking);
+    }
+  });
+
+  // hooks for the language-practice app: orb.speak(true) and orb.setLevel(0..1) from real audio
+  window.orb = {
+    speak: setSpeaking,
+    setBackground: function (css) { setBackground(css, null); },
+    setLevel: function (v) { externalLevel = (v === null || v === undefined) ? null : Math.min(1, Math.max(0, v)); }
+  };
+
+  // ---- loop -----------------------------------------------------------
+  var t0 = performance.now(), last = t0;
+  function frame(now) {
+    var dt = Math.min((now - last) / 1000, 1 / 20);
+    last = now;
+    var t = (now - t0) / 1000 * (reduce ? 0.5 : 1);
+    var amp = reduce ? 0.5 : 1;
+
+    // a timed ramp passed through a smootherstep curve: slow start, slow landing, no sudden moment in the middle
+    var step = dt / (speaking ? 2.0 : 1.6);
+    prog = speaking ? Math.min(1, prog + step) : Math.max(0, prog - step);
+    speakMix = prog * prog * prog * (prog * (prog * 6 - 15) + 10);
+    var tg = speaking ? (externalLevel !== null ? externalLevel : speechTarget(t)) : 0;
+    level += (tg - level) * (1 - Math.exp(-dt * (tg > level ? 18 : 7)));
+
+    // underdamped springs give the soft wobble and the slight sideways stretch
+    var stretch = (0.17 * speakMix + 0.05 * level) * amp;
+    // idle: a slow breath (both axes swell together) with two slower, offset drifts so it never feels mechanical
+    var iw = (1 - speakMix) * amp;
+    var breath = Math.sin(t * 1.25);
+    var txs = 1 + stretch + iw * (0.011 * breath + 0.005 * Math.sin(t * 0.8 + 1.2));
+    var tys = 1 - stretch * 0.5 + iw * (0.011 * Math.sin(t * 1.25 - 0.35) + 0.005 * Math.sin(t * 1.05 + 2.0));
+    var k = 60, c = 8, steps = 2, h = dt / steps;
+    for (var i = 0; i < steps; i++) {
+      vx += (k * (txs - sx) - c * vx) * h; sx += vx * h;
+      vy += (k * (tys - sy) - c * vy) * h; sy += vy * h;
+    }
+
+    var kb = 1 - Math.exp(-dt * 3.0);
+    for (var j = 0; j < 3; j++) bgCur[j] += (bgTarget[j] - bgCur[j]) * kb;
+    applyUi(bgCur);
+    gl.uniform3f(U.u_bg, bgCur[0], bgCur[1], bgCur[2]);
+
+    var orbD = Math.min(H * 0.44, W * 0.56);
+    gl.uniform2f(U.u_res, W, H);
+    gl.uniform2f(U.u_center, W * 0.5, H * 0.55);
+    gl.uniform1f(U.u_a, orbD / 2);
+    gl.uniform2f(U.u_scale, sx, sy);
+    gl.uniform1f(U.u_time, t);
+    gl.uniform1f(U.u_speak, speakMix);
+    gl.uniform1f(U.u_level, level);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+})();
+</script>
+
+</body></html>
