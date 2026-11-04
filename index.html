@@ -534,7 +534,7 @@ out vec4 o;
 
 const float N = 2.0;        // exponent 2 = true circle at rest, true oval once stretched
 
-const vec3 COCONUT = vec3(0.953, 0.933, 0.890);   // coconut milk
+const vec3 COCONUT = vec3(0.937, 0.886, 0.784);   // light background, #EFE2C8
 const vec3 WHALE   = vec3(0.043, 0.231, 0.325);   // blue whale
 const vec3 MINT    = vec3(0.773, 0.902, 0.863);   // sea-glass mint
 
@@ -556,7 +556,7 @@ vec3 bgAt(vec2 uv, float th) {
   float g = 1.0 - smoothstep(0.55, 2.9, dist);
   g = g * g * (0.4 + 0.6 * g);
   // light: coconut milk with a sea-glass mint glow around the orb; dark: black with the blue whale glow
-  vec3 lightC = mix(COCONUT * (0.975 + 0.035 * pool), MINT, g * 0.8);
+  vec3 lightC = mix(COCONUT * (0.985 + 0.015 * pool), MINT, g * 0.8);
   vec3 darkC = mix(vec3(0.0, 0.003, 0.006), WHALE, g);
   return mix(lightC, darkC, th);
 }
@@ -1081,7 +1081,7 @@ void main() {
 
   function applyUi(t) {
     var dark = t === 1, st = root.style;
-    st.setProperty("--bg", dark ? "#02090e" : "#f3eee3");
+    st.setProperty("--bg", dark ? "#02090e" : "#EFE2C8");
     st.setProperty("--fg", dark ? "#ecebf2" : "#1d1c22");
     st.setProperty("--fg-dim", dark ? "#8d9aa6" : "#77747f");
     st.setProperty("--line", dark ? "rgba(255,255,255,0.16)" : "rgba(0,0,0,0.14)");
