@@ -1289,7 +1289,7 @@ void main() {
     // purple glass and the three pairs of grille bars
     float inCap = alpha * smoothstep(0.30, 0.95, mm);
     float vg = smoothstep(0.95, -0.40, q.y);
-    outc = mix(outc, outc * vec3(0.80, 0.62, 1.10) + vec3(0.18, 0.06, 0.34) * (0.35 + 0.65 * vg), 0.55 * inCap);
+    outc = mix(outc, outc * vec3(0.92, 0.84, 1.05) + vec3(0.07, 0.03, 0.14) * (0.35 + 0.65 * vg), 0.50 * inCap);
     float bars = 0.0;
     for (int i = 0; i < 3; i++) {
       float yc = 0.477 - 0.272 * float(i);
@@ -1297,7 +1297,8 @@ void main() {
       float bd = sdRB(bp, vec2(0.1365, 0.068), vec4(0.0, 0.0, 0.068, 0.068));
       bars = max(bars, 1.0 - smoothstep(-0.004, 0.004, bd));
     }
-    outc *= 1.0 - 0.20 * bars * inCap;
+    outc *= 1.0 - 0.09 * bars * inCap;
+    outc += vec3(0.85, 0.92, 1.0) * 0.035 * bars * inCap * th;
     // bracket, tabs, neck and base (flat colour, like the icon), drawn behind the glass
     vec2 aq = vec2(q.x, q.y + (1.0 - appear) * 0.22);
     vec2 ab = vec2(abs(aq.x), aq.y);
@@ -1311,13 +1312,27 @@ void main() {
     float aa = max(fwidth(aq.y), 1e-4) * 1.2;
     float aBr = 1.0 - smoothstep(-aa, aa, dBr);
     float aSt = 1.0 - smoothstep(-aa, aa, min(dNeck, dBase));
-    float dC = sdCap(aq);
-    vec3 brC = mix(vec3(0.68, 0.83, 1.00), vec3(0.86, 0.93, 1.00), smoothstep(0.3, -0.6, aq.y));
-    brC = mix(brC, vec3(0.34, 0.48, 1.00), 0.75 * exp(-max(dC, 0.0) / 0.035) * step(aq.y, 0.30));
-    vec3 stC = mix(vec3(0.72, 0.46, 1.00), vec3(0.60, 0.22, 1.00), smoothstep(-0.55, -1.0, aq.y));
+    // the same glass as the orb: see-through, lit from above, a fine bright edge, the orb's blue-to-violet in it
+    float dA = (aSt > aBr) ? min(dNeck, dBase) : dBr;
+    float depth = max(-dA, 0.0);
     float aAll = max(aBr, aSt);
-    vec3 acc = (aSt > aBr) ? stC : brC;
-    outc = mix(outc, acc, aAll * appear * (1.0 - alpha) * 0.96);
+    float rimG = exp(-pow(depth / 0.014, 2.0));
+    float lowLit = 0.55 + 0.45 * smoothstep(0.25, -0.85, aq.y);
+    float inner = exp(-pow(depth / 0.07, 2.0));
+    float tv = smoothstep(0.35, -1.0, aq.y);
+    vec3 gT = mix(vec3(0.34, 0.56, 1.00), vec3(0.62, 0.46, 0.98), tv);
+    gT = mix(gT, vec3(0.30, 0.78, 0.96), 0.35 * exp(-pow((aq.y + 0.30) / 0.35, 2.0)));
+    float fillA = 0.20 + 0.16 * inner;
+    // dark surroundings: the colour glows; light surroundings: it sits in the glass like ink
+    vec3 gDark = bg + gT * fillA * 0.62 + vec3(0.80, 0.90, 1.0) * rimG * 0.42 * lowLit;
+    vec3 gLight = mix(bg, gT * 0.80, fillA * 1.55) + vec3(1.0) * rimG * 0.30 * lowLit;
+    vec3 glassC = mix(gLight, gDark, th);
+    // a soft window reflection along the top of the bracket's arms
+    float topRef = exp(-pow((aq.y - 0.20) / 0.10, 2.0)) * inner * step(0.0, aq.y);
+    glassC += vec3(0.85, 0.93, 1.0) * topRef * 0.12;
+    outc = mix(outc, glassC, aAll * appear * (1.0 - alpha));
+    // the same light falling on the cap's own edge where it meets the bracket
+    outc += vec3(0.5, 0.65, 1.0) * exp(-pow(max(sdCap(aq), 0.0) / 0.03, 2.0)) * 0.05 * appear * aAll * (1.0 - alpha) * (1.0 - th * 0.0);
   }
 
   // the leading edge of the wave: a thin glowing ring (warm going to light, cool going to dark)
