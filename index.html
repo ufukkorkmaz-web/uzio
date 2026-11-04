@@ -206,105 +206,91 @@ body {
 .msg.tutor { align-self: flex-start; padding: 2px 4px; }
 .msg.wide { max-width: 100%; }
 
-/* ---- language pills: soft glass pills with a slowly drifting, low-opacity flag gradient ---- */
-.lang-pills { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
-.lang-pill {
-  position: relative;
-  isolation: isolate;          /* keeps the gradient layer behind the label */
-  overflow: hidden;            /* clips the click ripple to the pill shape */
-  font: 600 14px/1 var(--font-ui);
-  letter-spacing: 0.01em;
-  color: var(--fg);
-  padding: 10px 18px;
-  background: transparent;
-  border: 1px solid var(--line);
-  border-radius: 999px;
+/* ---- language spheres: three small glass spheres tinted with their flags. The chosen one flies into the orb. ---- */
+.msg.greet { align-self: center; text-align: center; max-width: 100%; }
+.lang-spheres { display: flex; justify-content: center; gap: clamp(18px, 7vw, 38px); margin-top: 16px; }
+.lang-sphere {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 4px 2px;
+  border: 0;
+  background: none;
+  color: var(--fg-dim);
+  font: 600 13px/1 var(--font-ui);
+  letter-spacing: 0.02em;
   cursor: pointer;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
-  transition: filter 0.25s ease, border-color 0.25s ease, transform 0.25s ease;
   -webkit-tap-highlight-color: transparent;
+  animation: spherebob 6s ease-in-out infinite;     /* each one floats gently, out of step with the others */
+  transition: color 0.3s ease;
 }
-/* the animated gradient layer (opacity is lowered here and in the colour stops) */
-.lang-pill::before {
-  content: "";
+.lang-sphere:hover, .lang-sphere:focus-visible, .lang-sphere.sel { color: var(--fg); }
+.lang-sphere:focus-visible { outline: 2px solid var(--accent); outline-offset: 6px; border-radius: 18px; }
+@keyframes spherebob { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-4px); } }
+
+.ball {
+  position: relative;
+  display: block;
+  width: 58px;
+  height: 58px;
+  border-radius: 50%;
+  overflow: hidden;
+  isolation: isolate;
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  background: rgba(255, 255, 255, 0.06);
+  box-shadow: 0 10px 26px -8px var(--glow, rgba(127, 208, 255, 0.5)),
+              inset 0 -8px 14px rgba(0, 0, 0, 0.28), inset 0 2px 4px rgba(255, 255, 255, 0.30);
+  transition: transform 0.35s cubic-bezier(.3, 1.4, .5, 1), opacity 0.4s ease, border-color 0.3s ease, filter 0.3s ease;
+}
+/* the flag colours drifting slowly inside the glass */
+.ball .flow {
   position: absolute;
   inset: 0;
-  z-index: -1;
   background: var(--g);
-  background-size: 260% 260%;
-  opacity: 0.8;
-  animation: pillflow 7s ease-in-out infinite alternate;
+  background-size: 300% 300%;
+  opacity: 0.92;
+  animation: sphereflow 8s ease-in-out infinite alternate;
 }
-/* the click ripple */
-.lang-pill::after {
+/* a soft dark edge makes it read as a sphere; the shine sits on top of it */
+.ball::after {
   content: "";
   position: absolute;
   inset: 0;
-  z-index: -1;
-  background: radial-gradient(circle at var(--rx, 50%) var(--ry, 50%),
-              rgba(255, 255, 255, 0.55) 0, rgba(255, 255, 255, 0.18) 28%, transparent 60%);
-  opacity: 0;
+  border-radius: 50%;
+  background: radial-gradient(circle at 50% 38%, transparent 52%, rgba(0, 0, 0, 0.30) 100%);
   pointer-events: none;
 }
-.lang-pill:hover { filter: brightness(1.08); transform: translateY(-1px); }
-.lang-pill:active { transform: scale(0.97); }
-.lang-pill:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
-.lang-pill[aria-pressed="true"] { border-color: var(--fg); }
-
-/* click: a squish-and-bounce on the pill, and a light that spreads from the click point */
-.lang-pill.pop { animation: pillpop 0.6s cubic-bezier(.3, 1.5, .5, 1); }
-.lang-pill.pop::after { animation: pillripple 0.7s ease-out; }
-@keyframes pillpop {
-  0%   { transform: scale(1); }
-  25%  { transform: scale(0.93, 0.88); }
-  55%  { transform: scale(1.07, 1.05); }
-  100% { transform: scale(1); }
-}
-@keyframes pillripple {
-  0%   { opacity: 0.9; clip-path: circle(0% at var(--rx, 50%) var(--ry, 50%)); }
-  100% { opacity: 0;   clip-path: circle(140% at var(--rx, 50%) var(--ry, 50%)); }
-}
-@keyframes pillflow {
-  0%   { background-position: 0% 0%; }
-  100% { background-position: 100% 100%; }
-}
-/* click: a bright glass reflection sweeps once across the pill (the same idea as the orb's intro glint) */
-.lang-pill .glint {
+.ball .shine {
   position: absolute;
-  top: 0;
-  bottom: 0;
-  left: 0;
-  width: 55%;
   z-index: 1;
+  left: 13%;
+  top: 8%;
+  width: 50%;
+  height: 30%;
+  border-radius: 50%;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.72), rgba(255, 255, 255, 0));
+  transform: rotate(-24deg);
   pointer-events: none;
-  opacity: 0;
-  background: linear-gradient(100deg, transparent 0%, rgba(255, 255, 255, 0.10) 25%,
-              rgba(255, 255, 255, 0.70) 50%, rgba(255, 255, 255, 0.10) 75%, transparent 100%);
-  transform: translateX(-130%) skewX(-22deg);
 }
-.lang-pill.pop .glint { animation: pillglint 0.8s cubic-bezier(.4, 0, .2, 1) 0.06s; }
-@keyframes pillglint {
-  0%   { opacity: 0; transform: translateX(-130%) skewX(-22deg); }
-  15%  { opacity: 1; }
-  80%  { opacity: 1; }
-  100% { opacity: 0; transform: translateX(240%) skewX(-22deg); }
-}
+@keyframes sphereflow { 0% { background-position: 0% 0%; } 100% { background-position: 100% 100%; } }
+.ball.en { --glow: rgba(60, 100, 230, 0.55);
+  --g: linear-gradient(125deg, #1f3a8c 0%, #e9edf8 30%, #c8283c 52%, #e9edf8 72%, #1f3a8c 100%); }
+.ball.de { --glow: rgba(238, 170, 40, 0.50);
+  --g: linear-gradient(180deg, #1c1c20 0%, #cd2626 50%, #eebe30 100%); }
+.ball.de .flow { animation-duration: 9.5s; animation-delay: -3s; }
+.ball.fr { --glow: rgba(210, 70, 100, 0.50);
+  --g: linear-gradient(100deg, #2246a0 0%, #e9edf8 50%, #cd323e 100%); }
+.ball.fr .flow { animation-duration: 11s; animation-delay: -5s; }
 
-/* English: the Union Jack (navy, red and white), drifting diagonally */
-.lang-pill.en { --g: linear-gradient(120deg,
-  rgba(36, 63, 140, 0.16) 0%, color-mix(in srgb, var(--flag-w) 55%, transparent) 22%,
-  rgba(200, 40, 60, 0.15) 45%, color-mix(in srgb, var(--flag-w) 55%, transparent) 68%,
-  rgba(36, 63, 140, 0.16) 100%); }
-/* Deutsch: black, red and gold, drifting vertically */
-.lang-pill.de { --g: linear-gradient(180deg,
-  color-mix(in srgb, var(--flag-k) 55%, transparent) 0%, rgba(205, 38, 38, 0.15) 35%,
-  rgba(238, 190, 48, 0.19) 65%, color-mix(in srgb, var(--flag-k) 55%, transparent) 100%); }
-.lang-pill.de::before { animation-duration: 8.5s; animation-delay: -2s; }
-/* Français: blue, white and red, drifting sideways */
-.lang-pill.fr { --g: linear-gradient(100deg,
-  rgba(34, 70, 160, 0.17) 0%, color-mix(in srgb, var(--flag-w) 55%, transparent) 33%,
-  rgba(205, 50, 62, 0.15) 66%, color-mix(in srgb, var(--flag-w) 55%, transparent) 100%); }
-.lang-pill.fr::before { animation-duration: 9.5s; animation-delay: -4s; }
+.lang-sphere:hover .ball { transform: translateY(-3px) scale(1.07); filter: brightness(1.1); }
+.lang-sphere:active .ball { transform: scale(0.95); }
+/* after a choice the spheres rest, dimmed; the chosen one keeps a ring. Hover wakes them to switch language. */
+.lang-spheres.chosen .ball { opacity: 0.38; transform: scale(0.86); filter: none; }
+.lang-spheres.chosen .lang-sphere.sel .ball { border-color: var(--fg); }
+.lang-spheres.chosen .lang-sphere:hover .ball { opacity: 0.85; transform: scale(0.95); }
+/* the copy that travels to the orb */
+.ball.flying { position: fixed; margin: 0; z-index: 30; pointer-events: none; opacity: 1 !important; transition: none; will-change: transform, opacity; }
 
 @keyframes msgin { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
 
@@ -482,8 +468,8 @@ body {
   .theme.pop .ring, .theme.pop .knob, .theme .stars i { animation: none; }
   .msg { animation: none; }
   .thread { scroll-behavior: auto; }
-  .lang-pill, .lang-pill:hover, .lang-pill:active { transition: none; transform: none; }
-  .lang-pill::before, .lang-pill.pop, .lang-pill.pop::after, .lang-pill.pop .glint { animation: none; }
+  .ball, .lang-sphere { transition: none; }
+  .lang-sphere, .ball .flow { animation: none; }
   .caption, .caption .w { transition-duration: 0.01s; }
 }
 /* The Awakening: isolated entrance styling; all regular UI styles stay intact. */
@@ -651,6 +637,8 @@ uniform float u_ripple;   // 0..1 how strongly rings leave the orb (speech energ
 uniform float u_rphase;   // ring clock: runs faster when the voice is louder
 uniform float u_glint;    // one-shot glass reflection sweep at the end of the intro
 uniform float u_introColor; // 0..1: glass gains the orb palette during its awakening
+uniform vec3  u_tint;       // colour of the chosen language
+uniform float u_tintAmt;    // 0..1 how strongly the orb carries it
 out vec4 o;
 
 const float N = 2.0;        // exponent 2 = true circle at rest, true oval once stretched
@@ -677,8 +665,10 @@ vec3 bgAt(vec2 uv, float th) {
   float g = 1.0 - smoothstep(0.55, 2.9, dist);
   g = g * g * (0.4 + 0.6 * g);
   // light: coconut milk with a sea-glass mint glow around the orb; dark: black with the blue whale glow
-  vec3 lightC = mix(COCONUT * (0.985 + 0.015 * pool), MINT, g * 0.8);
-  vec3 darkC = mix(vec3(0.0, 0.003, 0.006), WHALE, g);
+  vec3 mintT = mix(MINT, mix(MINT, u_tint, 0.55), u_tintAmt);
+  vec3 whaleT = mix(WHALE, mix(WHALE, u_tint * 0.55, 0.60), u_tintAmt);
+  vec3 lightC = mix(COCONUT * (0.985 + 0.015 * pool), mintT, g * 0.8);
+  vec3 darkC = mix(vec3(0.0, 0.003, 0.006), whaleT, g);
   return mix(lightC, darkC, th);
 }
 
@@ -936,6 +926,8 @@ void main() {
   float arcs = (ring * 0.30 + sheen * 0.07) * (0.8 + 0.5 * u_level * u_speak);
   col += (arcs + soft * 0.11) * topMask * lit * vec3(0.86, 0.93, 1.0);
   col += hear * lm * u_introColor;   // sound waves arriving
+  // the chosen language tints the glass: a little at the rim, more toward the bottom
+  col += u_tint * u_tintAmt * (0.05 + 0.10 * rc * rc) * (0.6 + 0.4 * sd(0.8, -0.8, q.y));
   // A brief diagonal specular reflection catches the curved glass as the intro ends.
   // The sweep is confined to the orb and gently fades at its silhouette.
   if (u_glint >= 0.0 && u_glint <= 1.0) {
@@ -1081,7 +1073,7 @@ void main() {
 
   var U = {};
   ["u_res", "u_center", "u_a", "u_scale", "u_time", "u_speak", "u_level", "u_bands",
-   "u_floorLevel", "u_floorBands", "u_glint", "u_introColor", "u_listen", "u_from", "u_to", "u_wave", "u_origin", "u_maxd", "u_ripple", "u_rphase"].forEach(function (n) {
+   "u_floorLevel", "u_floorBands", "u_glint", "u_introColor", "u_tint", "u_tintAmt", "u_listen", "u_from", "u_to", "u_wave", "u_origin", "u_maxd", "u_ripple", "u_rphase"].forEach(function (n) {
     U[n] = gl.getUniformLocation(prog, n);
   });
 
@@ -1790,17 +1782,6 @@ void main() {
     fr: { label: "Fran\u00e7ais", reply: "Tr\u00e8s bien, pratiquons le fran\u00e7ais ! Parle-moi un peu de toi, et nous commen\u00e7ons." }
   };
   var currentLang = null;
-  function chooseLanguage(code, row) {
-    var L = LANGS[code];
-    currentLang = code;
-    Array.prototype.forEach.call(row.children, function (b) {
-      b.setAttribute("aria-pressed", b.getAttribute("data-lang") === code ? "true" : "false");
-    });
-    addMessage("user", L.label);
-    window.dispatchEvent(new CustomEvent("orb:language", { detail: { language: code, label: L.label } }));
-    clearTimeout(replyTimer);
-    replyTimer = setTimeout(function () { reply(L.reply); }, 700);
-  }
   // the orb reacts to a language choice: the glass squeezes in, springs back with a bounce, and a reflection sweeps across it
   var orbGlintAt = -1e9;
   function orbReact() {
@@ -1809,44 +1790,87 @@ void main() {
     setTimeout(function () { vx += 1.1; vy += 1.1; }, 120);  // release, so it overshoots and settles
     orbGlintAt = performance.now();
   }
-  // click animation: the ripple starts exactly where the pill was pressed
-  function popPill(b, e) {
-    orbReact();
-    sfx.play("pill");
-    var r = b.getBoundingClientRect();
-    var x = e.clientX ? e.clientX - r.left : r.width / 2;    // keyboard "clicks" have no coordinates
-    var y = e.clientX ? e.clientY - r.top : r.height / 2;
-    b.style.setProperty("--rx", x + "px");
-    b.style.setProperty("--ry", y + "px");
-    b.classList.remove("pop");
-    void b.offsetWidth;                                       // restart the animation if clicked again
-    b.classList.add("pop");
-    setTimeout(function () { b.classList.remove("pop"); }, 750);
+  // the orb takes on the colour of the chosen language (its glass and the glow around it)
+  var TINTS = { en: [0.28, 0.46, 1.0], de: [1.0, 0.66, 0.22], fr: [0.92, 0.40, 0.66] };
+  var tintCol = [0, 0, 0], tintTarget = [0, 0, 0], tintAmt = 0, tintGoal = 0;
+  function setTint(code) {
+    var c = TINTS[code];
+    if (!c) return;
+    if (tintAmt < 0.02 || reduce) tintCol = c.slice();
+    tintTarget = c;
+    tintGoal = 1;
+    if (reduce) tintAmt = 1;
+  }
+  // the chosen sphere lifts, arcs up into the orb and dissolves into it; the orb answers when it arrives
+  var flightBusy = false;
+  function flyToOrb(ball, code) {
+    function arrive() { orbReact(); sfx.play("pill"); setTint(code); flightBusy = false; }
+    if (reduce || !ball.animate) { arrive(); return; }
+    flightBusy = true;
+    var r = ball.getBoundingClientRect();
+    var cr = canvas.getBoundingClientRect();
+    var dx = cr.left + cr.width * 0.5 - (r.left + r.width / 2);
+    var dy = cr.top + cr.height * (1 - ORB_Y) - (r.top + r.height / 2);
+    var side = Math.abs(dx) < 12 ? 0 : (dx > 0 ? -1 : 1) * 46;       // the path bulges away from the orb's side
+    var fly = ball.cloneNode(true);
+    fly.classList.add("flying");
+    fly.style.left = r.left + "px"; fly.style.top = r.top + "px";
+    fly.style.width = r.width + "px"; fly.style.height = r.height + "px";
+    document.body.appendChild(fly);
+    function tr(x, y, sc) { return "translate(" + x + "px," + y + "px) scale(" + sc + ")"; }
+    fly.animate([
+      { transform: tr(0, 0, 1), opacity: 1 },
+      { transform: tr(dx * 0.12 + side * 0.5, -26, 1.14), opacity: 1, offset: 0.16 },
+      { transform: tr(dx * 0.55 + side, dy * 0.55, 0.8), opacity: 1, offset: 0.55 },
+      { transform: tr(dx, dy, 0.34), opacity: 0.95, offset: 0.86 },
+      { transform: tr(dx, dy, 0.06), opacity: 0 }
+    ], { duration: 980, easing: "cubic-bezier(.4,0,.2,1)", fill: "forwards" });
+    setTimeout(arrive, 820);
+    setTimeout(function () { if (fly.parentNode) fly.parentNode.removeChild(fly); }, 1050);
+  }
+
+  function chooseLanguage(code, row, ball) {
+    if (flightBusy) return;
+    var L = LANGS[code];
+    currentLang = code;
+    row.classList.add("chosen");
+    Array.prototype.forEach.call(row.children, function (b) {
+      var on = b.getAttribute("data-lang") === code;
+      b.setAttribute("aria-pressed", on ? "true" : "false");
+      b.classList.toggle("sel", on);
+    });
+    addMessage("user", L.label);
+    window.dispatchEvent(new CustomEvent("orb:language", { detail: { language: code, label: L.label } }));
+    flyToOrb(ball, code);
+    clearTimeout(replyTimer);
+    replyTimer = setTimeout(function () { reply(L.reply); }, reduce ? 700 : 1500);   // the reply starts once the sphere has arrived
   }
   function addGreeting() {
     var el = document.createElement("div");
-    el.className = "msg tutor wide";
+    el.className = "msg tutor wide greet";
     var line = document.createElement("div");
-    line.textContent = "Hello! Which language would you like to practise today:";
+    line.textContent = "Hello! Which language would you like to practise today?";
     var row = document.createElement("div");
-    row.className = "lang-pills";
+    row.className = "lang-spheres";
     row.setAttribute("role", "group");
     row.setAttribute("aria-label", "Language");
-    ["en", "de", "fr"].forEach(function (code) {
+    ["en", "de", "fr"].forEach(function (code, i) {
       var b = document.createElement("button");
       b.type = "button";
-      b.className = "lang-pill " + code;
+      b.className = "lang-sphere";
       b.setAttribute("data-lang", code);
       b.setAttribute("aria-pressed", "false");
-      b.textContent = LANGS[code].label;
-      var gl2 = document.createElement("span");   // the reflection that sweeps across on click
-      gl2.className = "glint";
-      gl2.setAttribute("aria-hidden", "true");
-      b.appendChild(gl2);
-      b.addEventListener("click", function (e) {
-        popPill(b, e);
-        chooseLanguage(code, row);
-      });
+      b.style.animationDelay = (-i * 1.9) + "s";
+      var ball = document.createElement("span");
+      ball.className = "ball " + code;
+      ball.setAttribute("aria-hidden", "true");
+      var flow = document.createElement("span"); flow.className = "flow";
+      var shine = document.createElement("span"); shine.className = "shine";
+      ball.appendChild(flow); ball.appendChild(shine);
+      var name = document.createElement("span");
+      name.textContent = LANGS[code].label;
+      b.appendChild(ball); b.appendChild(name);
+      b.addEventListener("click", function () { chooseLanguage(code, row, ball); });
       row.appendChild(b);
     });
     el.appendChild(line);
@@ -2000,6 +2024,10 @@ void main() {
     if (glint < 0 && !introActive && orbGlintTime >= 0 && orbGlintTime <= 900) glint = orbGlintTime / 900;
     gl.uniform1f(U.u_glint, glint);
     gl.uniform1f(U.u_introColor, intro.color);
+    tintAmt += (tintGoal - tintAmt) * (1 - Math.exp(-dt * 1.4));                       // the language colour fades in
+    for (var ti = 0; ti < 3; ti++) tintCol[ti] += (tintTarget[ti] - tintCol[ti]) * (1 - Math.exp(-dt * 3));
+    gl.uniform3f(U.u_tint, tintCol[0], tintCol[1], tintCol[2]);
+    gl.uniform1f(U.u_tintAmt, tintAmt);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
     requestAnimationFrame(frame);
   }
