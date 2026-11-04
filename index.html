@@ -206,30 +206,106 @@ body {
 .msg.tutor { align-self: flex-start; padding: 2px 4px; }
 .msg.wide { max-width: 100%; }
 
-/* ---- language pills: soft glass pills tinted with their flag, each in the shape of its flag ---- */
+/* ---- language pills: soft glass pills with a slowly drifting, low-opacity flag gradient ---- */
 .lang-pills { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
 .lang-pill {
+  position: relative;
+  isolation: isolate;          /* keeps the gradient layer behind the label */
+  overflow: hidden;            /* clips the click ripple to the pill shape */
   font: 600 14px/1 var(--font-ui);
   letter-spacing: 0.01em;
   color: var(--fg);
   padding: 10px 18px;
+  background: transparent;
   border: 1px solid var(--line);
   border-radius: 999px;
   cursor: pointer;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.10);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
   transition: filter 0.25s ease, border-color 0.25s ease, transform 0.25s ease;
   -webkit-tap-highlight-color: transparent;
 }
+/* the animated gradient layer (opacity is lowered here and in the colour stops) */
+.lang-pill::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  background: var(--g);
+  background-size: 260% 260%;
+  opacity: 0.8;
+  animation: pillflow 7s ease-in-out infinite alternate;
+}
+/* the click ripple */
+.lang-pill::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  background: radial-gradient(circle at var(--rx, 50%) var(--ry, 50%),
+              rgba(255, 255, 255, 0.55) 0, rgba(255, 255, 255, 0.18) 28%, transparent 60%);
+  opacity: 0;
+  pointer-events: none;
+}
 .lang-pill:hover { filter: brightness(1.08); transform: translateY(-1px); }
-.lang-pill:active { transform: scale(0.98); }
+.lang-pill:active { transform: scale(0.97); }
 .lang-pill:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
 .lang-pill[aria-pressed="true"] { border-color: var(--fg); }
-/* English: the Union Jack, navy with a red and white cross, drawn diagonally */
-.lang-pill.en { background: linear-gradient(120deg, rgba(36, 63, 140, 0.30) 0%, var(--flag-w) 36%, rgba(200, 40, 60, 0.28) 54%, var(--flag-w) 72%, rgba(36, 63, 140, 0.30) 100%); }
-/* Deutsch: black, red and gold in horizontal bands, so top to bottom */
-.lang-pill.de { background: linear-gradient(180deg, var(--flag-k) 0%, rgba(205, 38, 38, 0.26) 50%, rgba(238, 190, 48, 0.32) 100%); }
-/* Français: blue, white and red in vertical bands, so left to right */
-.lang-pill.fr { background: linear-gradient(100deg, rgba(34, 70, 160, 0.30) 0%, var(--flag-w) 50%, rgba(205, 50, 62, 0.27) 100%); }
+
+/* click: a squish-and-bounce on the pill, and a light that spreads from the click point */
+.lang-pill.pop { animation: pillpop 0.6s cubic-bezier(.3, 1.5, .5, 1); }
+.lang-pill.pop::after { animation: pillripple 0.7s ease-out; }
+@keyframes pillpop {
+  0%   { transform: scale(1); }
+  25%  { transform: scale(0.93, 0.88); }
+  55%  { transform: scale(1.07, 1.05); }
+  100% { transform: scale(1); }
+}
+@keyframes pillripple {
+  0%   { opacity: 0.9; clip-path: circle(0% at var(--rx, 50%) var(--ry, 50%)); }
+  100% { opacity: 0;   clip-path: circle(140% at var(--rx, 50%) var(--ry, 50%)); }
+}
+@keyframes pillflow {
+  0%   { background-position: 0% 0%; }
+  100% { background-position: 100% 100%; }
+}
+/* click: a bright glass reflection sweeps once across the pill (the same idea as the orb's intro glint) */
+.lang-pill .glint {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 55%;
+  z-index: 1;
+  pointer-events: none;
+  opacity: 0;
+  background: linear-gradient(100deg, transparent 0%, rgba(255, 255, 255, 0.10) 25%,
+              rgba(255, 255, 255, 0.70) 50%, rgba(255, 255, 255, 0.10) 75%, transparent 100%);
+  transform: translateX(-130%) skewX(-22deg);
+}
+.lang-pill.pop .glint { animation: pillglint 0.8s cubic-bezier(.4, 0, .2, 1) 0.06s; }
+@keyframes pillglint {
+  0%   { opacity: 0; transform: translateX(-130%) skewX(-22deg); }
+  15%  { opacity: 1; }
+  80%  { opacity: 1; }
+  100% { opacity: 0; transform: translateX(240%) skewX(-22deg); }
+}
+
+/* English: the Union Jack (navy, red and white), drifting diagonally */
+.lang-pill.en { --g: linear-gradient(120deg,
+  rgba(36, 63, 140, 0.16) 0%, color-mix(in srgb, var(--flag-w) 55%, transparent) 22%,
+  rgba(200, 40, 60, 0.15) 45%, color-mix(in srgb, var(--flag-w) 55%, transparent) 68%,
+  rgba(36, 63, 140, 0.16) 100%); }
+/* Deutsch: black, red and gold, drifting vertically */
+.lang-pill.de { --g: linear-gradient(180deg,
+  color-mix(in srgb, var(--flag-k) 55%, transparent) 0%, rgba(205, 38, 38, 0.15) 35%,
+  rgba(238, 190, 48, 0.19) 65%, color-mix(in srgb, var(--flag-k) 55%, transparent) 100%); }
+.lang-pill.de::before { animation-duration: 8.5s; animation-delay: -2s; }
+/* Français: blue, white and red, drifting sideways */
+.lang-pill.fr { --g: linear-gradient(100deg,
+  rgba(34, 70, 160, 0.17) 0%, color-mix(in srgb, var(--flag-w) 55%, transparent) 33%,
+  rgba(205, 50, 62, 0.15) 66%, color-mix(in srgb, var(--flag-w) 55%, transparent) 100%); }
+.lang-pill.fr::before { animation-duration: 9.5s; animation-delay: -4s; }
+
 @keyframes msgin { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
 
 /* ---- test controls: folded away top left so the orb stays the only thing on the stage ---- */
@@ -377,6 +453,7 @@ body {
   .msg { animation: none; }
   .thread { scroll-behavior: auto; }
   .lang-pill, .lang-pill:hover, .lang-pill:active { transition: none; transform: none; }
+  .lang-pill::before, .lang-pill.pop, .lang-pill.pop::after, .lang-pill.pop .glint { animation: none; }
   .caption, .caption .w { transition-duration: 0.01s; }
 }
 /* The Awakening: isolated entrance styling; all regular UI styles stay intact. */
@@ -1501,6 +1578,27 @@ void main() {
     clearTimeout(replyTimer);
     replyTimer = setTimeout(function () { reply(L.reply); }, 700);
   }
+  // the orb reacts to a language choice: the glass squeezes in, springs back with a bounce, and a reflection sweeps across it
+  var orbGlintAt = -1e9;
+  function orbReact() {
+    if (reduce) return;
+    vx += -0.7; vy += -0.7;                                  // squeeze
+    setTimeout(function () { vx += 1.1; vy += 1.1; }, 120);  // release, so it overshoots and settles
+    orbGlintAt = performance.now();
+  }
+  // click animation: the ripple starts exactly where the pill was pressed
+  function popPill(b, e) {
+    orbReact();
+    var r = b.getBoundingClientRect();
+    var x = e.clientX ? e.clientX - r.left : r.width / 2;    // keyboard "clicks" have no coordinates
+    var y = e.clientX ? e.clientY - r.top : r.height / 2;
+    b.style.setProperty("--rx", x + "px");
+    b.style.setProperty("--ry", y + "px");
+    b.classList.remove("pop");
+    void b.offsetWidth;                                       // restart the animation if clicked again
+    b.classList.add("pop");
+    setTimeout(function () { b.classList.remove("pop"); }, 750);
+  }
   function addGreeting() {
     var el = document.createElement("div");
     el.className = "msg tutor wide";
@@ -1517,7 +1615,14 @@ void main() {
       b.setAttribute("data-lang", code);
       b.setAttribute("aria-pressed", "false");
       b.textContent = LANGS[code].label;
-      b.addEventListener("click", function () { chooseLanguage(code, row); });
+      var gl2 = document.createElement("span");   // the reflection that sweeps across on click
+      gl2.className = "glint";
+      gl2.setAttribute("aria-hidden", "true");
+      b.appendChild(gl2);
+      b.addEventListener("click", function (e) {
+        popPill(b, e);
+        chooseLanguage(code, row);
+      });
       row.appendChild(b);
     });
     el.appendChild(line);
@@ -1664,6 +1769,9 @@ void main() {
     var glintTime = now - introStartedAt - GLINT_START;
     var glint = (!reduce && !introWasSkipped && glintTime >= 0 && glintTime <= GLINT_DURATION)
       ? glintTime / GLINT_DURATION : -1;
+    // the same reflection sweeps across the orb when a language pill is clicked
+    var orbGlintTime = now - orbGlintAt;
+    if (glint < 0 && !introActive && orbGlintTime >= 0 && orbGlintTime <= 900) glint = orbGlintTime / 900;
     gl.uniform1f(U.u_glint, glint);
     gl.uniform1f(U.u_introColor, intro.color);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
