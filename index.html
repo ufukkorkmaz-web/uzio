@@ -1517,6 +1517,8 @@ void main() {
   listenBtn.addEventListener("click", function () { setListening(!listening); });
   // ---- soft sounds: tiny glass-like chimes made with Web Audio (no audio files). The speaker button mutes them. ----
   var soundBtn = document.getElementById("sound");
+  // phones play their own start and stop tones for voice input, and an extra chime can clash with the microphone
+  var COARSE = !!(window.matchMedia && window.matchMedia("(pointer: coarse)").matches);
   var sfx = (function () {
     var ctx = null, master = null, on = true;
     try { on = localStorage.getItem("uzio-sound") !== "off"; } catch (e) {}
@@ -1560,6 +1562,7 @@ void main() {
     };
     function play(name) {
       if (!on || !S[name]) return;
+      if (COARSE && (name === "micOn" || name === "micOff")) return;
       S[name].forEach(function (n) { tone(n[0], n[1], n[2], n[3]); });
     }
     function sync() {
@@ -1584,6 +1587,7 @@ void main() {
   var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
   var REC_LANG = { en: "en-US", de: "de-DE", fr: "fr-FR" };   // follows the language pill; English until one is chosen
   var AUTO_SEND = true;                                        // false = only fill the chatbox and let the student press Enter
+  var INTERIM = true;                                          // show words live while speaking; set false to fill the chatbox only at the end
   var PLACEHOLDER = msgInput.placeholder;
   var rec = null, recActive = false, micPulse = 0;
   if (!SR) micBtn.title = "Voice input isn’t supported in this browser";
@@ -1595,6 +1599,28 @@ void main() {
     }, 4500);
   }
 
+  // Reads the recognizer's result list into one clean sentence. Computers return a single growing result, but many
+  // phones (Android Chrome especially) return every partial result as its own entry, each already containing the
+  // words before it. Simply joining them repeats the words ("hello hello how hello how are"), so each entry is
+  // compared with what is already collected: a longer version replaces it, a repeat is skipped, and only a
+  // genuinely new stretch of speech is appended.
+  function heard(results) {
+    var out = "", base = "";
+    for (var i = 0; i < results.length; i++) {
+      var t = (results[i][0].transcript || "").replace(/\s+/g, " ").trim();
+      if (i > 0 && !results[i - 1].isFinal) out = base;   // a live guess is always replaced by the next one
+      base = out;
+      if (!t) continue;
+      if (!out) { out = t; continue; }
+      var a = out.toLowerCase(), b = t.toLowerCase();
+      if (b.indexOf(a) === 0) out = t;                                     // the same sentence, now longer
+      else if (a.indexOf(b) !== -1) continue;                              // a repeat of something already heard
+      else if (a.split(" ")[0] === b.split(" ")[0]) out = t;               // the recogniser revised its guess
+      else out += " " + t;                                                 // a new stretch of speech
+    }
+    return out;
+  }
+
   function startVoice() {
     if (!SR) {
       sfx.play("error");
@@ -1603,16 +1629,15 @@ void main() {
     }
     var r;
     try { r = new SR(); } catch (e) { sfx.play("error"); micNote("Couldn’t start voice input · try again"); return; }
-    var finalText = "", recErr = "";
+    var finalText = "", recErr = "", sent = false;
     r.lang = REC_LANG[currentLang] || "en-US";
-    r.interimResults = true;
+    r.interimResults = INTERIM;
     r.continuous = false;
     r.maxAlternatives = 1;
     r.onspeechstart = function () { if (r === rec) micPulse = 1; };
     r.onresult = function (e) {
       if (r !== rec) return;
-      var txt = "";
-      for (var i = 0; i < e.results.length; i++) txt += e.results[i][0].transcript;
+      var txt = heard(e.results);
       msgInput.value = txt;                       // the words appear in the chatbox as they are said
       micPulse = 1;                               // and the orb answers each burst of speech
       if (e.results[e.results.length - 1].isFinal) finalText = txt;
@@ -1627,6 +1652,8 @@ void main() {
       var hard = recErr === "not-allowed" || recErr === "service-not-allowed" || recErr === "audio-capture" || recErr === "network";
       if (spoken && !hard) {
         msgInput.value = spoken;
+        if (sent) return;                         // never send the same sentence twice
+        sent = true;
         if (AUTO_SEND) chatForm.dispatchEvent(new Event("submit", { cancelable: true, bubbles: true }));
         else { sfx.play("micOff"); msgInput.focus(); }
         return;
