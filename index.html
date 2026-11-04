@@ -836,7 +836,7 @@ body {
   var CAP_H = 96, CAP_GAP = 8;   // the caption band: two lines of text, then a small gap before the conversation
   var dockEl = document.getElementById("dock");
   // where the orb sits, as fractions of the screen (shared by the drawing loop and the thread layout)
-  var ORB_H = 0.30, ORB_W = 0.405, ORB_Y = 0.71;   // diameter vs height, diameter vs width, centre height from the bottom
+  var ORB_H = 0.30, ORB_W = 0.405, ORB_Y = 0.50;   // diameter vs height, diameter vs width, centre height from the bottom
   var knob = themeBtn.querySelector(".knob");
   var gl = canvas.getContext("webgl2", { antialias: false, alpha: false, powerPreference: "high-performance" });
   if (!gl) { document.getElementById("nogl").hidden = false; return; }
