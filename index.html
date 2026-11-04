@@ -918,6 +918,9 @@ float sdRB(vec2 p, vec2 b, vec4 r) {
 // the microphone's capsule, in orb units (the whole icon spans -1..1 vertically)
 float sdCap(vec2 q) { return sdRB(q - vec2(0.0, 0.295), vec2(0.409, 0.704), vec4(0.409, 0.27, 0.409, 0.27)); }
 
+// the speaking shape: a horizontal pill, in orb units
+float sdPill(vec2 q) { return sdRB(q, vec2(1.12, 0.50), vec4(0.50)); }
+
 // radial distance to the orb outline (1.0 on the edge), with a soft ripple while speaking.
 float R(vec2 q) {
   vec2 d = max(abs(q), vec2(1e-4));
@@ -929,6 +932,9 @@ float R(vec2 q) {
               + u_speak * 0.25 * sin(5.0 * th - u_rphase * 10.0);
   float pert = (u_speak * (0.006 + 0.014 * u_level) + (1.0 - u_speak) * 0.004) * lobes;
   float rc0 = r / (1.0 + pert);
+  // speaking: the circle stretches sideways into a pill (1 on its edge, 0 along its centre line)
+  float sp = clamp(u_speak, 0.0, 1.0);
+  if (sp > 0.001) rc0 = mix(rc0, (1.0 + sdPill(q) / 0.50) / (1.0 + 0.6 * pert), sp * sp * (3.0 - 2.0 * sp));
   float m = clamp(u_mic, 0.0, 1.25);
   if (m < 0.001) return rc0;
   float rm = 1.0 + sdCap(q) / 0.409;                  // 1 on the capsule's edge, 0 along its centre line
@@ -1266,7 +1272,7 @@ void main() {
   // ripples: soft rings leave the orb while it speaks, widening and fading as they go. They follow the orb's own
   // outline, are fainter below it (where the caption and conversation live) and never draw over the glass.
   if (u_ripple > 0.004) {
-    float dq = length(q);
+    float dq = mix(length(q), 1.0 + sdPill(q), clamp(u_speak, 0.0, 1.0));   // rings leave the pill's own outline
     float rip = 0.0;
     for (int i = 0; i < 3; i++) {
       float rph = fract(u_rphase + float(i) / 3.0);
