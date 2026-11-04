@@ -447,6 +447,36 @@ body {
 @keyframes ringpop { 0% { opacity: 0.85; transform: scale(1); } 100% { opacity: 0; transform: scale(1.9, 2.5); } }
 @keyframes stretch { 0% { transform: scaleX(1); } 38% { transform: scaleX(1.5) scaleY(0.88); } 100% { transform: scaleX(1); } }
 
+/* ---- sound switch (top right, just left of the theme switch) ---- */
+.sound {
+  position: fixed;
+  top: calc(14px + env(safe-area-inset-top, 0px));
+  right: calc(max(14px, env(safe-area-inset-right, 0px)) + 58px);
+  width: 27px;
+  height: 27px;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  color: var(--fg-dim);
+  background: var(--fill);
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  cursor: pointer;
+  z-index: 5;
+  -webkit-backdrop-filter: blur(14px);
+  backdrop-filter: blur(14px);
+  -webkit-tap-highlight-color: transparent;
+  transition: background 0.45s ease, border-color 0.45s ease, color 0.45s ease, transform 0.2s ease;
+}
+.sound:hover { background: var(--fill-hover); color: var(--fg); }
+.sound:active { transform: scale(0.94); }
+.sound:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.sound svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.sound .waves, .sound .slash { transition: opacity 0.25s ease; }
+.sound .slash { opacity: 0; }
+.sound[aria-pressed="false"] .waves { opacity: 0; }
+.sound[aria-pressed="false"] .slash { opacity: 1; }
+
 @media (prefers-reduced-motion: reduce) {
   .theme .knob, .theme .knob svg, .theme .stars, .theme .cloud { transition-duration: 0.01s; }
   .theme.pop .ring, .theme.pop .knob, .theme .stars i { animation: none; }
@@ -508,6 +538,12 @@ body {
     opacity: 1; transform: none; pointer-events: auto; transition: none;
   }
 }
+/* the sound switch arrives with the other controls at the end of the intro */
+.intro-active .sound { opacity: 0; pointer-events: none; transition: opacity .62s ease; }
+.intro-active.intro-show-tools .sound { opacity: 1; }
+@media (prefers-reduced-motion: reduce) {
+  .intro-active .sound { opacity: 1; transition: none; }
+}
 </style>
 </head>
 <body>
@@ -526,6 +562,14 @@ body {
     <svg class="moon" viewBox="0 0 24 24"><path d="M20.5 13.2A8.6 8.6 0 1 1 10.8 3.5a6.8 6.8 0 0 0 9.7 9.7z"/></svg>
   </span>
   <span class="ring" aria-hidden="true"></span>
+</button>
+
+<button id="sound" class="sound" type="button" aria-pressed="true" aria-label="Mute sounds" title="Sounds on">
+  <svg viewBox="0 0 24 24" aria-hidden="true">
+    <path d="M4 9.5h3.5L12 6v12l-4.5-3.5H4z"/>
+    <g class="waves"><path d="M15.5 9.2a4 4 0 0 1 0 5.6"/><path d="M18 6.8a7.5 7.5 0 0 1 0 10.4"/></g>
+    <path class="slash" d="M16 9.5l5 5M21 9.5l-5 5"/>
+  </svg>
 </button>
 
 <details class="tools" id="tools">
@@ -1052,7 +1096,7 @@ void main() {
   // Keep the original 4.5s duration; the final glass reflection finishes before the end.
   var GLINT_START = 3630, GLINT_DURATION = 710;
   var introWasSkipped = false;
-  var introUi = [document.getElementById("theme"), document.getElementById("tools"), dockEl, threadEl];
+  var introUi = [document.getElementById("theme"), document.getElementById("sound"), document.getElementById("tools"), dockEl, threadEl];
   if (introActive) {
     document.documentElement.classList.add("intro-active");
     introSkip.hidden = false;
@@ -1368,6 +1412,11 @@ void main() {
       if (audioActive) stopAudio();
     }
     listening = on;
+    if (!on && recActive && rec) {   // listening was cut short (for example by a reply starting): drop the recognition too
+      var rr = rec; recActive = false; rec = null;
+      msgInput.placeholder = PLACEHOLDER;
+      try { rr.abort(); } catch (err) {}
+    }
     if (on) endCaption();
     listenBtn.textContent = on ? "Stop listening" : "Listen";
     listenBtn.setAttribute("aria-pressed", on ? "true" : "false");
@@ -1466,7 +1515,153 @@ void main() {
   demoBtn.addEventListener("click", playDemo);
   btn.addEventListener("click", function () { setSpeaking(!speaking); });
   listenBtn.addEventListener("click", function () { setListening(!listening); });
-  micBtn.addEventListener("click", function () { setListening(!listening); });
+  // ---- soft sounds: tiny glass-like chimes made with Web Audio (no audio files). The speaker button mutes them. ----
+  var soundBtn = document.getElementById("sound");
+  var sfx = (function () {
+    var ctx = null, master = null, on = true;
+    try { on = localStorage.getItem("uzio-sound") !== "off"; } catch (e) {}
+    function ensure() {
+      if (!on) return null;
+      if (!ctx) {
+        var AC = window.AudioContext || window.webkitAudioContext;
+        if (!AC) return null;
+        ctx = new AC();
+        master = ctx.createGain();
+        master.gain.value = 0.5;               // overall softness
+        master.connect(ctx.destination);
+      }
+      if (ctx.state === "suspended") ctx.resume();
+      return ctx;
+    }
+    // one note: a sine with a quiet octave above it, a quick attack and a long soft fade
+    function tone(freq, at, dur, vol) {
+      var c = ensure();
+      if (!c) return;
+      var t = c.currentTime + at;
+      [[freq, vol], [freq * 2, vol * 0.22]].forEach(function (p) {
+        var o = c.createOscillator(), g = c.createGain();
+        o.type = "sine";
+        o.frequency.value = p[0];
+        g.gain.setValueAtTime(0.0001, t);
+        g.gain.exponentialRampToValueAtTime(p[1], t + 0.012);
+        g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+        o.connect(g); g.connect(master);
+        o.start(t); o.stop(t + dur + 0.05);
+      });
+    }
+    // [frequency, start (s), length (s), volume]
+    var S = {
+      pill:  [[659, 0, 0.50, 0.070], [988, 0.07, 0.60, 0.055]],      // language chosen: a bright two-note chime
+      send:  [[440, 0, 0.18, 0.050], [660, 0.05, 0.24, 0.045]],      // message sent: a quick upward blip
+      reply: [[587, 0, 0.40, 0.050], [880, 0.10, 0.55, 0.040]],      // tutor answers: a gentle low-to-high note
+      micOn: [[523, 0, 0.20, 0.050], [784, 0.07, 0.30, 0.050]],      // listening starts: rising
+      micOff:[[784, 0, 0.20, 0.040], [523, 0.07, 0.30, 0.040]],      // listening ends: falling
+      error: [[330, 0, 0.25, 0.050], [262, 0.08, 0.32, 0.050]]       // something went wrong: soft and low
+    };
+    function play(name) {
+      if (!on || !S[name]) return;
+      S[name].forEach(function (n) { tone(n[0], n[1], n[2], n[3]); });
+    }
+    function sync() {
+      soundBtn.setAttribute("aria-pressed", on ? "true" : "false");
+      soundBtn.setAttribute("aria-label", on ? "Mute sounds" : "Turn sounds on");
+      soundBtn.title = on ? "Sounds on" : "Sounds off";
+    }
+    function toggle() {
+      on = !on;
+      try { localStorage.setItem("uzio-sound", on ? "on" : "off"); } catch (e) {}
+      sync();
+      if (on) play("pill");
+    }
+    sync();
+    return { play: play, toggle: toggle };
+  })();
+  soundBtn.addEventListener("click", sfx.toggle);
+
+  // ---- voice input: the mic button listens through the browser's speech recognition ----
+  // It fills the chatbox as the student speaks and, when they stop, sends the sentence like a typed message
+  // (so the "orb:submit" event fires the same way). Works in Chrome and Edge; Safari is partial; Firefox has none.
+  var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  var REC_LANG = { en: "en-US", de: "de-DE", fr: "fr-FR" };   // follows the language pill; English until one is chosen
+  var AUTO_SEND = true;                                        // false = only fill the chatbox and let the student press Enter
+  var PLACEHOLDER = msgInput.placeholder;
+  var rec = null, recActive = false, micPulse = 0;
+  if (!SR) micBtn.title = "Voice input isn’t supported in this browser";
+
+  function micNote(text) {
+    stateEl.textContent = text;
+    setTimeout(function () {
+      if (stateEl.textContent === text && !listening && !speaking) stateEl.textContent = "Idle · tap the orb or press Space";
+    }, 4500);
+  }
+
+  function startVoice() {
+    if (!SR) {
+      sfx.play("error");
+      micNote("Voice input isn’t supported in this browser · try Chrome or Edge, or type instead");
+      return;
+    }
+    var r;
+    try { r = new SR(); } catch (e) { sfx.play("error"); micNote("Couldn’t start voice input · try again"); return; }
+    var finalText = "", recErr = "";
+    r.lang = REC_LANG[currentLang] || "en-US";
+    r.interimResults = true;
+    r.continuous = false;
+    r.maxAlternatives = 1;
+    r.onspeechstart = function () { if (r === rec) micPulse = 1; };
+    r.onresult = function (e) {
+      if (r !== rec) return;
+      var txt = "";
+      for (var i = 0; i < e.results.length; i++) txt += e.results[i][0].transcript;
+      msgInput.value = txt;                       // the words appear in the chatbox as they are said
+      micPulse = 1;                               // and the orb answers each burst of speech
+      if (e.results[e.results.length - 1].isFinal) finalText = txt;
+    };
+    r.onerror = function (e) { if (r === rec) recErr = e.error || "error"; };
+    r.onend = function () {
+      if (r !== rec) return;
+      recActive = false; rec = null;
+      msgInput.placeholder = PLACEHOLDER;
+      if (listening) setListening(false);
+      var spoken = (finalText || msgInput.value).trim();
+      var hard = recErr === "not-allowed" || recErr === "service-not-allowed" || recErr === "audio-capture" || recErr === "network";
+      if (spoken && !hard) {
+        msgInput.value = spoken;
+        if (AUTO_SEND) chatForm.dispatchEvent(new Event("submit", { cancelable: true, bubbles: true }));
+        else { sfx.play("micOff"); msgInput.focus(); }
+        return;
+      }
+      msgInput.value = "";
+      sfx.play(hard ? "error" : "micOff");
+      if (recErr === "not-allowed" || recErr === "service-not-allowed") micNote("The microphone is blocked · allow it in the browser’s address bar, then try again");
+      else if (recErr === "audio-capture") micNote("No microphone found · check that one is connected");
+      else if (recErr === "network") micNote("Voice input needs an internet connection");
+      else if (recErr !== "aborted") micNote("I didn’t catch that · tap the mic and try again");
+    };
+    rec = r; recActive = true;
+    try { r.start(); } catch (e) {
+      recActive = false; rec = null;
+      sfx.play("error");
+      micNote("Couldn’t start the microphone · try again");
+      return;
+    }
+    setListening(true);
+    msgInput.value = "";
+    msgInput.placeholder = "Listening…";
+    sfx.play("micOn");
+  }
+
+  function toggleMic() {
+    if (recActive && rec) {                       // tap again to finish: what was said so far is still used
+      var r = rec;
+      try { r.stop(); } catch (e) {}
+      setTimeout(function () { if (rec === r) { try { r.abort(); } catch (e) {} } }, 2500);
+      return;
+    }
+    if (listening) { setListening(false); sfx.play("micOff"); return; }
+    startVoice();
+  }
+  micBtn.addEventListener("click", toggleMic);
 
   // ---- the conversation ----
   var TUTOR_PLACEHOLDER = "This is where the tutor\u2019s reply will appear once a model is connected.";
@@ -1550,6 +1745,7 @@ void main() {
 
   // a reply from the tutor: shown in the thread and in the caption, and the orb speaks for roughly as long as it takes to say
   function reply(text) {
+    sfx.play("reply");
     addMessage("tutor", text);
     var ms = Math.min(14000, 1500 + text.length * 50);
     setSpeaking(true);
@@ -1589,6 +1785,7 @@ void main() {
   // click animation: the ripple starts exactly where the pill was pressed
   function popPill(b, e) {
     orbReact();
+    sfx.play("pill");
     var r = b.getBoundingClientRect();
     var x = e.clientX ? e.clientX - r.left : r.width / 2;    // keyboard "clicks" have no coordinates
     var y = e.clientX ? e.clientY - r.top : r.height / 2;
@@ -1640,6 +1837,7 @@ void main() {
     if (!text) return;
     msgInput.value = "";
     addMessage("user", text);
+    sfx.play("send");
     window.dispatchEvent(new CustomEvent("orb:submit", { detail: { text: text } }));
     clearTimeout(replyTimer);
     replyTimer = setTimeout(function () { reply(TUTOR_PLACEHOLDER); }, 700);
@@ -1698,7 +1896,8 @@ void main() {
     listenProg = listening ? Math.min(1, listenProg + lstep) : Math.max(0, listenProg - lstep);
     listenMix = listenProg * listenProg * (3 - 2 * listenProg);
     if (audioActive) externalLevel = readAudioEnergy();
-    var tg = listening ? (0.10 + 0.06 * Math.sin(t * 1.6) + (externalLevel !== null ? 0.5 * externalLevel : 0)) : spk ? (externalLevel !== null ? externalLevel : (demoActive ? demoEnergy(now, t) : speechTarget(t))) : 0;
+    micPulse *= Math.exp(-dt * 2.5);      // the orb's reaction to detected speech fades away between words
+    var tg = listening ? (0.10 + 0.06 * Math.sin(t * 1.6) + (externalLevel !== null ? 0.5 * externalLevel : 0) + 0.32 * micPulse) : spk ? (externalLevel !== null ? externalLevel : (demoActive ? demoEnergy(now, t) : speechTarget(t))) : 0;
     level += (tg - level) * (1 - Math.exp(-dt * (tg > level ? 18 : 7)));
     var rt = (speaking && !listening) ? (0.30 + 0.70 * level) : 0;
     levelSlow += (level - levelSlow) * (1 - Math.exp(-dt * 4.5));
