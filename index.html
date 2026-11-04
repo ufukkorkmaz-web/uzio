@@ -1806,7 +1806,7 @@ void main() {
 
   // ---- voice input: the mic button listens through the browser's speech recognition ----
   // It fills the chatbox as the student speaks and, when they stop, sends the sentence like a typed message
-  // (so the "orb:submit" event fires the same way). Works in Chrome and Edge; Safari is partial; Firefox has none.
+  // (so the "orb:submit" event fires the same way). Works in Chrome & Edge; Safari is partial; Firefox has none.
   var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
   var REC_LANG = { en: "en-US", de: "de-DE", fr: "fr-FR" };   // follows the language pill; English until one is chosen
   var AUTO_SEND = true;                                        // false = only fill the chatbox and let the student press Enter
