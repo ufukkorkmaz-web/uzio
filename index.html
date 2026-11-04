@@ -317,7 +317,7 @@ body {
 .tools {
   position: fixed;
   top: calc(12px + env(safe-area-inset-top, 0px));
-  right: calc(max(14px, env(safe-area-inset-right, 0px)) + 95px);
+  right: calc(max(14px, env(safe-area-inset-right, 0px)) + 142px);
   z-index: 5;
 }
 .tools summary {
@@ -628,19 +628,22 @@ body {
   .caption { transition: opacity .15s ease; filter: none; transform: none; }
 }
 
-/* The microphone is the only bottom-right action; Speak lives inside Test controls. */
+/* Microphone sits in the top control row, between Audio and Test Controls. */
 .floating-mic {
-  right: max(22px, env(safe-area-inset-right, 0px));
-  bottom: calc(22px + env(safe-area-inset-bottom, 0px));
-  width: 54px;
-  height: 54px;
+  top: calc(11px + env(safe-area-inset-top, 0px));
+  right: calc(max(14px, env(safe-area-inset-right, 0px)) + 95px);
+  bottom: auto;
+  width: 32px;
+  height: 32px;
 }
+.floating-mic svg { width: 16px; height: 16px; }
 @media (max-width: 520px) {
   .floating-mic {
-    right: max(16px, env(safe-area-inset-right, 0px));
-    bottom: calc(20px + env(safe-area-inset-bottom, 0px));
-    width: 48px;
-    height: 48px;
+    top: calc(11px + env(safe-area-inset-top, 0px));
+    right: calc(max(14px, env(safe-area-inset-right, 0px)) + 95px);
+    bottom: auto;
+    width: 32px;
+    height: 32px;
   }
 }
 
