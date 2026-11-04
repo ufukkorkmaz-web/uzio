@@ -863,6 +863,7 @@ uniform vec3  u_bands;    // bass, mids, treble (independently measured)
 uniform float u_floorLevel; // separately smoothed ambient glow
 uniform vec3  u_floorBands; // slower frequency response for corner glow
 uniform float u_listen;   // 0 = not listening, 1 = listening (eased)
+uniform float u_mic;      // 0 = orb .. 1 = microphone (springs, so it overshoots a little)
 uniform float u_from;     // theme the wave is leaving (0 light, 1 dark)
 uniform float u_to;       // theme the wave is bringing in
 uniform float u_wave;     // 0..1 progress of the theme wave
@@ -907,6 +908,16 @@ vec3 bgAt(vec2 uv, float th) {
   return mix(lightC, darkC, th);
 }
 
+// rounded box with a separate radius per corner (r = top-right, bottom-right, top-left, bottom-left)
+float sdRB(vec2 p, vec2 b, vec4 r) {
+  r.xy = (p.x > 0.0) ? r.xy : r.zw;
+  r.x  = (p.y > 0.0) ? r.x  : r.y;
+  vec2 d = abs(p) - b + r.x;
+  return min(max(d.x, d.y), 0.0) + length(max(d, 0.0)) - r.x;
+}
+// the microphone's capsule, in orb units (the whole icon spans -1..1 vertically)
+float sdCap(vec2 q) { return sdRB(q - vec2(0.0, 0.295), vec2(0.409, 0.704), vec4(0.409, 0.27, 0.409, 0.27)); }
+
 // radial distance to the orb outline (1.0 on the edge), with a soft ripple while speaking.
 float R(vec2 q) {
   vec2 d = max(abs(q), vec2(1e-4));
@@ -917,7 +928,11 @@ float R(vec2 q) {
   float lobes = 0.6 * sin(3.0 * th + u_time * 2.3) + 0.4 * sin(2.0 * th - u_time * 1.7 + 1.0)
               + u_speak * 0.25 * sin(5.0 * th - u_rphase * 10.0);
   float pert = (u_speak * (0.006 + 0.014 * u_level) + (1.0 - u_speak) * 0.004) * lobes;
-  return r / (1.0 + pert);
+  float rc0 = r / (1.0 + pert);
+  float m = clamp(u_mic, 0.0, 1.25);
+  if (m < 0.001) return rc0;
+  float rm = 1.0 + sdCap(q) / 0.409;                  // 1 on the capsule's edge, 0 along its centre line
+  return mix(rc0, rm / (1.0 + 0.5 * pert), m);        // the outline stretches from the circle into the capsule
 }
 
 vec3 ramp(float u, float x) {
@@ -1108,7 +1123,7 @@ void main() {
   float lm = u_listen;
   vec3 hear = vec3(0.0);
   if (lm > 0.001) {
-    float rr0 = length(q);
+    float rr0 = length(q - vec2(0.0, 0.30 * clamp(u_mic, 0.0, 1.0)));
     for (int i = 0; i < 3; i++) {
       float ph = fract(u_time * 0.20 + float(i) / 3.0);      // 0 at the rim .. 1 at the centre
       float rad = mix(0.98, 0.06, ph);
@@ -1267,6 +1282,44 @@ void main() {
   }
   vec3 outc = col * alpha + bg * (1.0 - alpha);
 
+  // ---- listening: the glass has become a microphone; its bracket and stand grow in around it ----
+  float mm = clamp(u_mic, 0.0, 1.0);
+  if (mm > 0.002) {
+    float appear = smoothstep(0.40, 0.95, mm);
+    // purple glass and the three pairs of grille bars
+    float inCap = alpha * smoothstep(0.30, 0.95, mm);
+    float vg = smoothstep(0.95, -0.40, q.y);
+    outc = mix(outc, outc * vec3(0.80, 0.62, 1.10) + vec3(0.18, 0.06, 0.34) * (0.35 + 0.65 * vg), 0.55 * inCap);
+    float bars = 0.0;
+    for (int i = 0; i < 3; i++) {
+      float yc = 0.477 - 0.272 * float(i);
+      vec2 bp = vec2(abs(q.x) - 0.2725, q.y - yc);
+      float bd = sdRB(bp, vec2(0.1365, 0.068), vec4(0.0, 0.0, 0.068, 0.068));
+      bars = max(bars, 1.0 - smoothstep(-0.004, 0.004, bd));
+    }
+    outc *= 1.0 - 0.20 * bars * inCap;
+    // bracket, tabs, neck and base (flat colour, like the icon), drawn behind the glass
+    vec2 aq = vec2(q.x, q.y + (1.0 - appear) * 0.22);
+    vec2 ab = vec2(abs(aq.x), aq.y);
+    float dU;
+    if (aq.y < 0.0) dU = abs(length(aq) - 0.5) - 0.0909;
+    else { vec2 sp = vec2(ab.x - 0.5, aq.y); float hh = clamp(sp.y / 0.227, 0.0, 1.0); dU = length(sp - vec2(0.0, 0.227 * hh)) - 0.0909; }
+    float dTab = sdRB(vec2(ab.x - 0.6, aq.y - 0.068), vec2(0.15, 0.068), vec4(0.068));
+    float dBr = min(dU, dTab);
+    float dNeck = sdRB(aq - vec2(0.0, -0.66), vec2(0.136, 0.16), vec4(0.0));
+    float dBase = sdRB(aq - vec2(0.0, -0.909), vec2(0.364, 0.091), vec4(0.091));
+    float aa = max(fwidth(aq.y), 1e-4) * 1.2;
+    float aBr = 1.0 - smoothstep(-aa, aa, dBr);
+    float aSt = 1.0 - smoothstep(-aa, aa, min(dNeck, dBase));
+    float dC = sdCap(aq);
+    vec3 brC = mix(vec3(0.68, 0.83, 1.00), vec3(0.86, 0.93, 1.00), smoothstep(0.3, -0.6, aq.y));
+    brC = mix(brC, vec3(0.34, 0.48, 1.00), 0.75 * exp(-max(dC, 0.0) / 0.035) * step(aq.y, 0.30));
+    vec3 stC = mix(vec3(0.72, 0.46, 1.00), vec3(0.60, 0.22, 1.00), smoothstep(-0.55, -1.0, aq.y));
+    float aAll = max(aBr, aSt);
+    vec3 acc = (aSt > aBr) ? stC : brC;
+    outc = mix(outc, acc, aAll * appear * (1.0 - alpha) * 0.96);
+  }
+
   // the leading edge of the wave: a thin glowing ring (warm going to light, cool going to dark)
   float rg = exp(-pow((dd - front + 0.04) / 0.035, 2.0)) * sin(3.14159265 * clamp(u_wave, 0.0, 1.0));
   vec3 ringCol = mix(vec3(1.0, 0.74, 0.38), vec3(0.45, 0.82, 1.0), u_to);
@@ -1308,7 +1361,7 @@ void main() {
 
   var U = {};
   ["u_res", "u_center", "u_a", "u_scale", "u_time", "u_speak", "u_level", "u_bands",
-   "u_floorLevel", "u_floorBands", "u_glint", "u_introColor", "u_tint", "u_tintAmt", "u_listen", "u_from", "u_to", "u_wave", "u_origin", "u_maxd", "u_ripple", "u_rphase"].forEach(function (n) {
+   "u_floorLevel", "u_floorBands", "u_glint", "u_introColor", "u_tint", "u_tintAmt", "u_listen", "u_mic", "u_from", "u_to", "u_wave", "u_origin", "u_maxd", "u_ripple", "u_rphase"].forEach(function (n) {
     U[n] = gl.getUniformLocation(prog, n);
   });
 
@@ -1478,7 +1531,7 @@ void main() {
 
   // ---- speaking state -------------------------------------------------
   var speaking = false;                         // what the app wants once listening is over
-  var listening = false, listenProg = 0, listenMix = 0;
+  var listening = false, listenProg = 0, listenMix = 0, micMix = 0, micVel = 0;
   var speakMix = 0, level = 0, prog = 0;
   var sx = 1, vx = 0, sy = 1, vy = 0;
   var bandsSmooth = [0, 0, 0];
@@ -1974,19 +2027,48 @@ void main() {
   var captionFadeTimer = 0;
   var cap = { words: [], starts: [], pages: [], cum: [], tot: 1, page: -1, idx: -2, spans: {}, mode: "off", t0: 0, dur: 1 };
   function capBuild(text) {
-    var re = /\S+/g, m, i;
+    var re = /\S+/g, m, i, LIM = 80;
     cap.words = []; cap.starts = []; cap.cum = []; cap.pages = [];
     while ((m = re.exec(text))) { cap.words.push(m[0]); cap.starts.push(m.index); }
-    var cur = [], len = 0, tot = 0;
+    var tot = 0;
     for (i = 0; i < cap.words.length; i++) {
       var w = cap.words[i];
-      if (cur.length && len + 1 + w.length > 80) { cap.pages.push(cur); cur = []; len = 0; }
-      cur.push(i); len += (len ? 1 : 0) + w.length;
       tot += w.length + 2 + (/[.!?]$/.test(w) ? 6 : (/[,;:]$/.test(w) ? 3 : 0));
       cap.cum.push(tot);
     }
-    if (cur.length) cap.pages.push(cur);
     cap.tot = Math.max(1, tot);
+    // 1. cut the text into sentences (a sentence ends at . ! ? or …)
+    var sents = [], cur = [];
+    for (i = 0; i < cap.words.length; i++) {
+      cur.push(i);
+      if (/[.!?\u2026]["\u201d\u2019)]*$/.test(cap.words[i])) { sents.push(cur); cur = []; }
+    }
+    if (cur.length) sents.push(cur);
+    function size(ix) { var n = 0; ix.forEach(function (k, q) { n += cap.words[k].length + (q ? 1 : 0); }); return n; }
+    // 2. a sentence too long for one page is split into equal parts, preferably after a comma, never leaving a stray word
+    var chunks = [];
+    sents.forEach(function (sn) {
+      var L = size(sn);
+      if (L <= LIM) { chunks.push(sn); return; }
+      var parts = Math.ceil(L / LIM), target = L / parts, part = [], len = 0, left = parts;
+      sn.forEach(function (k, q) {
+        part.push(k); len += cap.words[k].length + (part.length > 1 ? 1 : 0);
+        var rest = sn.length - q - 1;
+        var soft = /[,;:\u2013\u2014]$/.test(cap.words[k]);
+        if (left > 1 && rest >= 2 && (len >= target * 1.1 || (soft && len >= target * 0.7))) {
+          chunks.push(part); part = []; len = 0; left--;
+        }
+      });
+      if (part.length) chunks.push(part);
+    });
+    // 3. whole sentences share a page when they fit together; otherwise a new sentence starts a new page
+    var page = [], plen = 0;
+    chunks.forEach(function (ch) {
+      var L = size(ch);
+      if (page.length && plen + 1 + L > LIM) { cap.pages.push(page); page = []; plen = 0; }
+      page = page.concat(ch); plen += (plen ? 1 : 0) + L;
+    });
+    if (page.length) cap.pages.push(page);
   }
   function capShowPage(p) {
     cap.page = p;
@@ -2249,6 +2331,16 @@ void main() {
     var lstep = dt / 0.85;
     listenProg = listening ? Math.min(1, listenProg + lstep) : Math.max(0, listenProg - lstep);
     listenMix = listenProg * listenProg * (3 - 2 * listenProg);
+    // the orb stretches into the microphone on a spring, so it overshoots a little and settles
+    var micGoal = listening ? 1 : 0;
+    if (reduce) { micMix = micGoal; micVel = 0; }
+    else {
+      var sub = 3, h = dt / sub;
+      for (var si = 0; si < sub; si++) {
+        micVel += ((micGoal - micMix) * (listening ? 62 : 48) - micVel * (listening ? 8.5 : 9.5)) * h;
+        micMix += micVel * h;
+      }
+    }
     if (audioActive) externalLevel = readAudioEnergy();
     micPulse *= Math.exp(-dt * 2.5);      // the orb's reaction to detected speech fades away between words
     var tg = listening ? (0.10 + 0.06 * Math.sin(t * 1.6) + (externalLevel !== null ? 0.5 * externalLevel : 0) + 0.32 * micPulse) : spk ? (externalLevel !== null ? externalLevel : (demoActive ? demoEnergy(now, t) : speechTarget(t))) : 0;
@@ -2311,6 +2403,7 @@ void main() {
     gl.uniform1f(U.u_floorLevel, Math.max(floorLevel, intro.ambient));
     gl.uniform3f(U.u_floorBands, floorBands[0], floorBands[1], floorBands[2]);
     gl.uniform1f(U.u_listen, listenMix);
+    gl.uniform1f(U.u_mic, micMix);
     gl.uniform1f(U.u_from, fromT);
     gl.uniform1f(U.u_to, toT);
     gl.uniform1f(U.u_wave, wave);
