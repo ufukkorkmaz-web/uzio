@@ -1289,7 +1289,8 @@ void main() {
     // purple glass and the three pairs of grille bars
     float inCap = alpha * smoothstep(0.30, 0.95, mm);
     float vg = smoothstep(0.95, -0.40, q.y);
-    outc = mix(outc, outc * vec3(0.92, 0.84, 1.05) + vec3(0.07, 0.03, 0.14) * (0.35 + 0.65 * vg), 0.50 * inCap);
+    outc = mix(outc, outc * vec3(0.92, 0.84, 1.05) + vec3(0.07, 0.03, 0.14) * (0.35 + 0.65 * vg), 0.50 * (1.0 - 0.75 * u_tintAmt) * inCap);
+    outc = mix(outc, mix(u_tint * 0.88, outc + u_tint * 0.30, th), 0.26 * u_tintAmt * inCap);
     float bars = 0.0;
     for (int i = 0; i < 3; i++) {
       float yc = 0.477 - 0.272 * float(i);
@@ -1322,7 +1323,9 @@ void main() {
     float tv = smoothstep(0.35, -1.0, aq.y);
     vec3 gT = mix(vec3(0.34, 0.56, 1.00), vec3(0.62, 0.46, 0.98), tv);
     gT = mix(gT, vec3(0.30, 0.78, 0.96), 0.35 * exp(-pow((aq.y + 0.30) / 0.35, 2.0)));
-    float fillA = 0.20 + 0.16 * inner;
+    // the chosen language colours the glass: blue for English, amber for Deutsch, pink for Français
+    gT = mix(gT, mix(u_tint * 1.05, u_tint * 0.85 + vec3(0.08), tv), 0.92 * u_tintAmt);
+    float fillA = (0.20 + 0.16 * inner) * (1.0 + 0.9 * u_tintAmt);
     // dark surroundings: the colour glows; light surroundings: it sits in the glass like ink
     vec3 gDark = bg + gT * fillA * 0.62 + vec3(0.80, 0.90, 1.0) * rimG * 0.42 * lowLit;
     vec3 gLight = mix(bg, gT * 0.80, fillA * 1.55) + vec3(1.0) * rimG * 0.30 * lowLit;
