@@ -1,5 +1,8 @@
-<!doctype html><html><head><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover"><style>:root{color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html{scroll-padding-top:env(safe-area-inset-top,0px)}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#fff;color:#000}img{max-width:100%}[hidden]:not([hidden=until-found i]){display:none!important}</style></head><body>
-<meta name="claude:viewport-fit-sides" content="cover">
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>UZIO</title>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Manrope:wght@500;600&display=swap">
 <style>
@@ -14,6 +17,8 @@
   --fill: rgba(255, 255, 255, 0.07);
   --fill-hover: rgba(255, 255, 255, 0.12);
   --accent: #7fd0ff;
+  --flag-w: rgba(255, 255, 255, 0.12);   /* the white of the flags: a soft lift on dark, a clear band on light */
+  --flag-k: rgba(16, 16, 18, 0.42);      /* the black of the German flag, eased on light */
   --font-ui: "Manrope", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
   color-scheme: dark;
 }
@@ -199,6 +204,32 @@ body {
   border-radius: 20px 20px 6px 20px;
 }
 .msg.tutor { align-self: flex-start; padding: 2px 4px; }
+.msg.wide { max-width: 100%; }
+
+/* ---- language pills: soft glass pills tinted with their flag, each in the shape of its flag ---- */
+.lang-pills { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.lang-pill {
+  font: 600 14px/1 var(--font-ui);
+  letter-spacing: 0.01em;
+  color: var(--fg);
+  padding: 10px 18px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  cursor: pointer;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.10);
+  transition: filter 0.25s ease, border-color 0.25s ease, transform 0.25s ease;
+  -webkit-tap-highlight-color: transparent;
+}
+.lang-pill:hover { filter: brightness(1.08); transform: translateY(-1px); }
+.lang-pill:active { transform: scale(0.98); }
+.lang-pill:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.lang-pill[aria-pressed="true"] { border-color: var(--fg); }
+/* English: the Union Jack, navy with a red and white cross, drawn diagonally */
+.lang-pill.en { background: linear-gradient(120deg, rgba(36, 63, 140, 0.30) 0%, var(--flag-w) 36%, rgba(200, 40, 60, 0.28) 54%, var(--flag-w) 72%, rgba(36, 63, 140, 0.30) 100%); }
+/* Deutsch: black, red and gold in horizontal bands, so top to bottom */
+.lang-pill.de { background: linear-gradient(180deg, var(--flag-k) 0%, rgba(205, 38, 38, 0.26) 50%, rgba(238, 190, 48, 0.32) 100%); }
+/* Français: blue, white and red in vertical bands, so left to right */
+.lang-pill.fr { background: linear-gradient(100deg, rgba(34, 70, 160, 0.30) 0%, var(--flag-w) 50%, rgba(205, 50, 62, 0.27) 100%); }
 @keyframes msgin { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
 
 /* ---- test controls: folded away top left so the orb stays the only thing on the stage ---- */
@@ -345,6 +376,7 @@ body {
   .theme.pop .ring, .theme.pop .knob, .theme .stars i { animation: none; }
   .msg { animation: none; }
   .thread { scroll-behavior: auto; }
+  .lang-pill, .lang-pill:hover, .lang-pill:active { transition: none; transform: none; }
   .caption, .caption .w { transition-duration: 0.01s; }
 }
 /* The Awakening: isolated entrance styling; all regular UI styles stay intact. */
@@ -400,6 +432,9 @@ body {
   }
 }
 </style>
+</head>
+<body>
+
 <canvas id="orb" role="img" aria-label="Voice orb. Tap to start or stop speaking."></canvas>
 <button id="intro-skip" class="intro-skip" type="button" hidden>Skip intro &rarr;</button>
 <p id="nogl" hidden>This page needs WebGL 2 to draw the orb. Open it in a current version of Chrome, Safari, Edge or Firefox.</p>
@@ -1053,6 +1088,8 @@ void main() {
     st.setProperty("--fill", dark ? "rgba(255,255,255,0.07)" : "rgba(0,0,0,0.045)");
     st.setProperty("--fill-hover", dark ? "rgba(255,255,255,0.12)" : "rgba(0,0,0,0.085)");
     st.setProperty("--accent", dark ? "#7fd0ff" : "#c9742a");
+    st.setProperty("--flag-w", dark ? "rgba(255,255,255,0.12)" : "rgba(255,255,255,0.60)");
+    st.setProperty("--flag-k", dark ? "rgba(16,16,18,0.42)" : "rgba(60,60,66,0.20)");
     st.setProperty("color-scheme", dark ? "dark" : "light");
   }
 
@@ -1445,7 +1482,49 @@ void main() {
       if (speaking && !demoActive && !audioActive) setSpeaking(false);
     }, ms);
   }
-  addMessage("tutor", "Hello! Which language would you like to practise today: English, Deutsch or Fran\u00e7ais?");
+
+  // ---- the first question: three pills to choose the language ----
+  var LANGS = {
+    en: { label: "English",  reply: "Great, let\u2019s practise English! Tell me a little about yourself and we\u2019ll start there." },
+    de: { label: "Deutsch",  reply: "Sehr gut, \u00fcben wir Deutsch! Erz\u00e4hl mir ein wenig von dir, dann fangen wir an." },
+    fr: { label: "Fran\u00e7ais", reply: "Tr\u00e8s bien, pratiquons le fran\u00e7ais ! Parle-moi un peu de toi, et nous commen\u00e7ons." }
+  };
+  var currentLang = null;
+  function chooseLanguage(code, row) {
+    var L = LANGS[code];
+    currentLang = code;
+    Array.prototype.forEach.call(row.children, function (b) {
+      b.setAttribute("aria-pressed", b.getAttribute("data-lang") === code ? "true" : "false");
+    });
+    addMessage("user", L.label);
+    window.dispatchEvent(new CustomEvent("orb:language", { detail: { language: code, label: L.label } }));
+    clearTimeout(replyTimer);
+    replyTimer = setTimeout(function () { reply(L.reply); }, 700);
+  }
+  function addGreeting() {
+    var el = document.createElement("div");
+    el.className = "msg tutor wide";
+    var line = document.createElement("div");
+    line.textContent = "Hello! Which language would you like to practise today:";
+    var row = document.createElement("div");
+    row.className = "lang-pills";
+    row.setAttribute("role", "group");
+    row.setAttribute("aria-label", "Language");
+    ["en", "de", "fr"].forEach(function (code) {
+      var b = document.createElement("button");
+      b.type = "button";
+      b.className = "lang-pill " + code;
+      b.setAttribute("data-lang", code);
+      b.setAttribute("aria-pressed", "false");
+      b.textContent = LANGS[code].label;
+      b.addEventListener("click", function () { chooseLanguage(code, row); });
+      row.appendChild(b);
+    });
+    el.appendChild(line);
+    el.appendChild(row);
+    threadEl.appendChild(el);
+  }
+  addGreeting();
   layoutThread();
 
   // the chatbox: Enter sends. There is no model behind it yet, so a placeholder reply stands in; the text is also
@@ -1475,6 +1554,7 @@ void main() {
     listen: setListening,
     addMessage: addMessage,   // addMessage("user" | "tutor", text): adds to the thread without speaking
     reply: reply,             // reply(text): adds a tutor message and lets the orb speak it
+    getLanguage: function () { return currentLang; },   // "en" | "de" | "fr" once chosen; also announced as an "orb:language" event
     playDemo: playDemo,
     stopDemo: stopDemo,
     stopAudio: stopAudio,
@@ -1593,5 +1673,5 @@ void main() {
 })();
 </script>
 
-
-</body></html>
+</body>
+</html>
