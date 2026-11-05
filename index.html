@@ -889,6 +889,15 @@ const vec3 MINT    = vec3(0.773, 0.902, 0.863);   // sea-glass mint
 
 float hash(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
 
+// value noise + fbm: the ragged, drifting edge of the ink that spreads through the glass after impact
+float vn(vec2 p) {
+  vec2 i = floor(p), f = fract(p);
+  f = f * f * (3.0 - 2.0 * f);
+  return mix(mix(hash(i), hash(i + vec2(1.0, 0.0)), f.x),
+             mix(hash(i + vec2(0.0, 1.0)), hash(i + vec2(1.0, 1.0)), f.x), f.y);
+}
+float fbm(vec2 p) { return 0.5 * vn(p) + 0.3 * vn(p * 2.07 + 1.7) + 0.2 * vn(p * 4.1 + 5.3); }
+
 // smoothstep that tolerates reversed edges
 float sd(float a, float b, float x) {
   return a < b ? smoothstep(a, b, x) : 1.0 - smoothstep(b, a, x);
@@ -925,7 +934,7 @@ float sdCap(vec2 q) { return sdRB(q - vec2(0.0, 0.295), vec2(0.409, 0.704), vec4
 // the speaking shape: a horizontal pill, in orb units
 const float PILL_W = 1.45;   // half the pill's length; the radius of its ends is 0.5
 float sdPill(vec2 q) { return sdRB(q, vec2(PILL_W, 0.50), vec4(0.50)); }
-float pillK() { float sp = clamp(u_speak, 0.0, 1.0); return sp * sp * (3.0 - 2.0 * sp); }   // how far the orb has become the pill
+float pillK() { return 0.0; }   // the pill is retired: the orb stays a circle while speaking
 
 // radial distance to the orb outline (1.0 on the edge), with a soft ripple while speaking.
 float R(vec2 q) {
@@ -938,9 +947,6 @@ float R(vec2 q) {
               + u_speak * 0.25 * sin(5.0 * th - u_rphase * 10.0);
   float pert = (u_speak * (0.006 + 0.014 * u_level) + (1.0 - u_speak) * 0.004) * lobes;
   float rc0 = r / (1.0 + pert);
-  // speaking: the circle stretches sideways into a pill (1 on its edge, 0 along its centre line)
-  float sp = clamp(u_speak, 0.0, 1.0);
-  if (sp > 0.001) rc0 = mix(rc0, (1.0 + sdPill(q) / 0.50) / (1.0 + 0.6 * pert), sp * sp * (3.0 - 2.0 * sp));
   float m = clamp(u_mic, 0.0, 1.25);
   if (m < 0.001) return rc0;
   float rm = 1.0 + sdCap(q) / 0.409;                  // 1 on the capsule's edge, 0 along its centre line
@@ -1225,12 +1231,25 @@ void main() {
     col += u_dropCol * exp(-dot(dv, dv) / (u_drop.z * u_drop.z * 1.7)) * 0.55 * u_drop.w * inside;
   }
   if (u_absorb >= 0.0) {
-    // a soft ring of light runs out from where the droplet entered, and a wash of its colour follows it
-    float rr = length(gl_FragCoord.xy - u_impact) / pxs;
-    float rad = u_absorb * 2.2;
-    float rg = exp(-pow((rr - rad) / 0.20, 2.0)) * pow(1.0 - u_absorb, 1.5);
-    col += (vec3(0.80, 0.90, 1.0) * 0.30 + u_dropCol * 0.30) * rg;
-    col += u_dropCol * 0.22 * exp(-pow(rr / (0.35 + 1.5 * u_absorb), 2.0)) * (1.0 - u_absorb);
+    float ab = u_absorb;
+    vec2 ip = (gl_FragCoord.xy - u_impact) / pxs;
+    float rr = length(ip);
+    // shockwave: a fast, bright ring that races through the glass from the point of impact
+    float radE = 1.0 - pow(1.0 - ab, 2.2);
+    float ringW = exp(-pow((rr - radE * 2.4) / 0.14, 2.0)) * pow(1.0 - ab, 1.2);
+    col += (vec3(0.85, 0.93, 1.0) * 0.45 + u_dropCol * 0.35) * ringW;
+    // a flash at the moment of impact
+    col += u_dropCol * 0.55 * exp(-pow(rr / 0.30, 2.0)) * pow(1.0 - ab, 3.0);
+    // ink in water: a ragged, slowly drifting front with swirling density behind it
+    float nz  = fbm(ip * 2.4 + vec2(0.0, u_time * 0.12));
+    float nz2 = fbm(ip * 5.2 - vec2(u_time * 0.18, 0.0) + 3.0);
+    float inkFront = (1.0 - pow(1.0 - ab, 1.8)) * 2.9;
+    float inkEdge = inkFront + (nz - 0.5) * 1.1;
+    float inkM = 1.0 - smoothstep(inkEdge - 0.45, inkEdge, rr);
+    float dens = inkM * (0.50 + 0.95 * nz2);
+    float shell = 0.45 + 0.95 * smoothstep(0.50, 1.0, rc);     // it pools along the glass shell
+    float inkFade = 1.0 - smoothstep(0.60, 1.0, ab);            // and hands over to the steady tint
+    col += u_dropCol * dens * shell * inkFade * 0.95;
   }
   vec3 darkRes = 1.0 - exp(-(base + col) * 1.4);
   float em = max(col.r, max(col.g, col.b));
@@ -1305,7 +1324,7 @@ void main() {
   // ripples: soft rings leave the orb while it speaks, widening and fading as they go. They follow the orb's own
   // outline, are fainter below it (where the caption and conversation live) and never draw over the glass.
   if (u_ripple > 0.004) {
-    float dq = mix(length(q), 1.0 + sdPill(q), clamp(u_speak, 0.0, 1.0));   // rings leave the pill's own outline
+    float dq = length(q);   // rings leave the orb's own outline
     float rip = 0.0;
     for (int i = 0; i < 3; i++) {
       float rph = fract(u_rphase + float(i) / 3.0);
@@ -2213,12 +2232,14 @@ void main() {
     fr: { label: "Fran\u00e7ais", reply: "Tr\u00e8s bien, pratiquons le fran\u00e7ais ! Parle-moi un peu de toi, et nous commen\u00e7ons." }
   };
   var currentLang = null;
-  // the orb reacts to a language choice: the glass squeezes in, springs back with a bounce, and a reflection sweeps across it
+  // the orb reacts to a language choice: the glass squeezes in, springs back with a bounce, and a reflection sweeps across it.
+  // hard = the sphere has just crashed into it: a much heavier squash and a sharper rebound.
   var orbGlintAt = -1e9;
-  function orbReact() {
+  function orbReact(hard) {
     if (reduce) return;
-    vx += -0.7; vy += -0.7;                                  // squeeze
-    setTimeout(function () { vx += 1.1; vy += 1.1; }, 120);  // release, so it overshoots and settles
+    var s = hard ? -1.7 : -0.7;
+    vx += s; vy += s;                                                                        // squash
+    setTimeout(function () { vx += hard ? 2.0 : 1.1; vy += hard ? 2.0 : 1.1; }, hard ? 90 : 120);   // rebound
     orbGlintAt = performance.now();
   }
   // the orb takes on the colour of the chosen language (its glass and the glow around it)
@@ -2232,46 +2253,48 @@ void main() {
     tintGoal = 1;
     if (reduce) tintAmt = 1;
   }
-  // A single copy rises from its fixed selector, becomes an elastic liquid-glass
-  // droplet, then is absorbed into the central sphere. Nothing is left behind.
+  // The chosen sphere winds back, charges at the orb stretched along its path and crashes into it. The impact squashes the
+  // glass, sends a shockwave through it, and the sphere's colour bleeds out across the shell like ink in water before
+  // settling into the steady tint. The merging itself is drawn by the shader.
   var flightBusy = false;
   var dropAnim = null;
   var DROP_COL = { en: [0.36, 0.56, 1.0], de: [1.0, 0.72, 0.26], fr: [0.96, 0.44, 0.70] };
-  // The chosen sphere lifts out of the row, stretching as it flies (that part is the real glass ball). When it reaches
-  // the orb it becomes a drop of liquid: it touches, pulls a neck out of the orb, is drawn in, and a ring of light runs
-  // through the glass while the language colour spreads. All of the merging itself is drawn by the shader.
   function flyToOrb(ball, code) {
-    function arrive() { sfx.play("pill"); flightBusy = false; }
-    if (reduce || !ball.animate) { orbReact(); setTint(code); arrive(); return; }
+    function arrive() { flightBusy = false; }
+    if (reduce || !ball.animate) { orbReact(); setTint(code); sfx.play("pill"); arrive(); return; }
     flightBusy = true;
     var r = ball.getBoundingClientRect();
     var cr = canvas.getBoundingClientRect();
     var orbRc = Math.min(cr.height * ORB_H, cr.width * ORB_W) / 2;
     var cxC = cr.left + cr.width / 2, cyC = cr.top + cr.height * (1 - ORB_Y);
     var r0 = Math.max(18, r.width * 0.42);                    // radius of the drop, css px
-    var tx = cxC, ty = cyC + orbRc + r0 * 0.7;                // just under the orb
     var sx0 = r.left + r.width / 2, sy0 = r.top + r.height / 2;
+    // each sphere flies along its own straight line toward the orb's centre, so English comes in from the lower left,
+    // Deutsch from below and Français from the lower right, and each one strikes the edge that faces it
+    var vxd = cxC - sx0, vyd = cyC - sy0, vl = Math.hypot(vxd, vyd) || 1;
+    var ux = vxd / vl, uy = vyd / vl;
+    var tx = cxC - ux * (orbRc + r0 * 0.7), ty = cyC - uy * (orbRc + r0 * 0.7);   // just outside the orb, on that line
     var dx = tx - sx0, dy = ty - sy0;
-    var bend = Math.abs(dx) < 10 ? 0 : (dx > 0 ? -1 : 1) * Math.min(70, Math.abs(dx) * 0.22);
-    var tilt = dx > 15 ? -14 : (dx < -15 ? 14 : 0);
     var se = r0 / (r.width / 2);
+    var ang = Math.atan2(dy, dx) * 180 / Math.PI;             // the direction of travel
+    var wx = -Math.cos(ang * Math.PI / 180) * 16, wy = -Math.sin(ang * Math.PI / 180) * 16;   // wind-up: away from the orb
     var fly = ball.cloneNode(true);
     fly.classList.add("flying");
     fly.style.left = r.left + "px"; fly.style.top = r.top + "px";
     fly.style.width = r.width + "px"; fly.style.height = r.height + "px";
     document.body.appendChild(fly);
-    function tr(x, y, a, b, ang) { return "translate(" + x + "px," + y + "px) rotate(" + ang + "deg) scale(" + a + "," + b + ")"; }
+    function tr(x, y, a, b, rot) { return "translate(" + x + "px," + y + "px) rotate(" + rot + "deg) scale(" + a + "," + b + ")"; }
     var anim = fly.animate([
-      { transform: tr(0, 0, 1, 1, 0), borderRadius: "50%", offset: 0 },
-      { transform: tr(dx * 0.10 + bend * 0.5, dy * 0.10 - 12, 0.90, 1.22, tilt), borderRadius: "46% 54% 54% 46%", offset: 0.22 },
-      { transform: tr(dx * 0.62 + bend, dy * 0.62, se * 0.92, se * 1.34, tilt * 0.4), borderRadius: "44% 56% 52% 48%", offset: 0.68 },
-      { transform: tr(dx, dy, se, se, 0), borderRadius: "50%", offset: 1 }
-    ], { duration: 600, easing: "cubic-bezier(.4,0,.25,1)", fill: "forwards" });
+      { transform: tr(0, 0, 1, 1, ang), offset: 0, easing: "ease-out" },
+      { transform: tr(wx, wy, 1.12, 0.86, ang), offset: 0.30, easing: "cubic-bezier(.75,0,1,.55)" },            // pulls back
+      { transform: tr(dx * 0.80, dy * 0.80, se * 1.25, se * 0.78, ang), offset: 0.90 },                         // charges, stretched
+      { transform: tr(dx, dy, se * 1.05, se * 0.95, ang), offset: 1 }
+    ], { duration: 520, fill: "forwards" });
     anim.finished.catch(function () {});
     setTimeout(function () {
       if (fly.parentNode) fly.parentNode.removeChild(fly);
-      dropAnim = { t0: performance.now(), cx: cxC, cy: cyC, ty: ty, r0: r0, orbR: orbRc, code: code, reacted: false, tinted: false, done: arrive };
-    }, 600);
+      dropAnim = { t0: performance.now(), cx: cxC, cy: cyC, tx: tx, ty: ty, ux: ux, uy: uy, r0: r0, orbR: orbRc, code: code, reacted: false, tinted: false, done: arrive };
+    }, 520);
   }
   function easeIn3(x) { x = Math.max(0, Math.min(1, x)); return x * x * x; }
 
@@ -2289,7 +2312,7 @@ void main() {
     window.dispatchEvent(new CustomEvent("orb:language", { detail: { language: code, label: L.label } }));
     flyToOrb(ball, code);
     clearTimeout(replyTimer);
-    replyTimer = setTimeout(function () { reply(L.reply); }, reduce ? 700 : 1750);   // the reply starts once the sphere has been absorbed
+    replyTimer = setTimeout(function () { reply(L.reply); }, reduce ? 700 : 1700);   // the reply starts once the ink has mostly spread
   }
   function addGreeting() {
     var row = document.createElement("div");
@@ -2432,10 +2455,10 @@ void main() {
     // speaking: the orb stays a circle. It swells a little with the loudness (pulse) and is squeezed or stretched a
     // little as the voice rises or falls away (jelly); the springs below ring that out into a soft wobble.
     var onset = Math.max(-1, Math.min(1, (level - levelSlow) * 2.2));
-    var pulse = 0.018 * level * speakMix * amp;
-    var jelly = 0.032 * onset * speakMix * amp;
+    var pulse = 0.014 * level * speakMix * amp;      // gentle swell with the voice
+    var jelly = 0.020 * onset * speakMix * amp;      // gentle squeeze and stretch
     // idle: a slow breath (both axes swell together) with two slower, offset drifts so it never feels mechanical
-    var iw = (1 - speakMix) * amp;
+    var iw = (1 - 0.30 * speakMix) * amp;            // the slow breath keeps going while speaking
     var breath = Math.sin(t * 1.25);
     var txs = 1 + pulse + jelly - listenMix * (0.035 - 0.02 * level) + iw * (0.011 * breath + 0.005 * Math.sin(t * 0.8 + 1.2));
     var tys = 1 + pulse - jelly * 0.8 - listenMix * (0.035 - 0.02 * level) + iw * (0.011 * Math.sin(t * 1.25 - 0.35) + 0.005 * Math.sin(t * 1.05 + 2.0));
@@ -2443,7 +2466,7 @@ void main() {
       var breathIn = listenMix * (0.040 * level + 0.006 * Math.sin(t * 1.4));
       txs += breathIn; tys += breathIn * 1.15;
     }
-    var k = 110 + 40 * speakMix, c = 15 - 3.5 * speakMix, steps = 2, h = dt / steps;   // only slightly springier while speaking
+    var k = 110 + 15 * speakMix, c = 15 - 1.5 * speakMix, steps = 2, h = dt / steps;   // barely springier while speaking, so the wobble stays soft
     for (var i = 0; i < steps; i++) {
       vx += (k * (txs - sx) - c * vx) * h; sx += vx * h;
       vy += (k * (tys - sy) - c * vy) * h; sy += vy * h;
@@ -2464,21 +2487,22 @@ void main() {
     gl.uniform1f(U.u_listen, listenMix);
     gl.uniform1f(U.u_mic, micMix);
     if (dropAnim) {
-      var DUR = 1000, tt = (now - dropAnim.t0) / DUR;
+      var DUR = 1150, tt = (now - dropAnim.t0) / DUR;
       if (tt >= 1) { var dn = dropAnim.done; dropAnim = null; dn(); }
       else {
         var da = dropAnim;
-        var pp = easeIn3(Math.min(1, tt / 0.66));
+        var pp = easeIn3(Math.min(1, tt / 0.20));                 // the final lunge into the glass
+        var xcss = da.tx + (da.cx - da.tx) * pp;
         var ycss = da.ty + (da.cy - da.ty) * pp;
-        var rad = da.r0 * (1 - 0.40 * Math.min(1, tt / 0.66));
-        var wd = tt < 0.62 ? 1 : Math.max(0, 1 - (tt - 0.62) / 0.38);
+        var rad = da.r0 * (1 - 0.5 * Math.min(1, tt / 0.20));
+        var wd = tt < 0.18 ? 1 : Math.max(0, 1 - (tt - 0.18) / 0.14);
         var dc = DROP_COL[da.code];
-        gl.uniform4f(U.u_drop, W * 0.5, H - ycss * DPR, rad * DPR, wd);
+        gl.uniform4f(U.u_drop, xcss * DPR, H - ycss * DPR, rad * DPR, wd);
         gl.uniform3f(U.u_dropCol, dc[0], dc[1], dc[2]);
-        gl.uniform2f(U.u_impact, W * 0.5, H - (da.cy + da.orbR) * DPR);
-        gl.uniform1f(U.u_absorb, tt < 0.10 ? -1 : Math.min(1, (tt - 0.10) / 0.88));
-        if (!da.reacted && tt >= 0.12) { da.reacted = true; orbReact(); }
-        if (!da.tinted && tt >= 0.40) { da.tinted = true; setTint(da.code); }
+        gl.uniform2f(U.u_impact, (da.cx - da.ux * da.orbR) * DPR, H - (da.cy - da.uy * da.orbR) * DPR);   // the edge facing the sphere
+        gl.uniform1f(U.u_absorb, tt < 0.17 ? -1 : Math.min(1, (tt - 0.17) / 0.83));
+        if (!da.reacted && tt >= 0.17) { da.reacted = true; orbReact(true); sfx.play("pill"); }   // the crash
+        if (!da.tinted && tt >= 0.45) { da.tinted = true; setTint(da.code); }
       }
     }
     if (!dropAnim) {
