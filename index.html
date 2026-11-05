@@ -776,7 +776,7 @@ body {
   </button>
   <p id="state" class="sr-only" aria-live="polite">Idle · tap the orb or press Space</p>
   <details class="chat-tools" id="chat-tools">
-    <summary>Conversation</summary>
+    <summary>Chat</summary>
     <div class="chat-panel">
       <div class="chat-panel-heading">Conversation</div>
       <div class="chat-history" id="chat-history" role="log" aria-live="polite" aria-label="Chat history">
@@ -852,6 +852,7 @@ void main() { gl_Position = vec4(a, 0.0, 1.0); }`;
 
   var FS = `#version 300 es
 precision highp float;
+precision highp sampler2D;
 uniform vec2  u_res;
 uniform vec2  u_center;
 uniform float u_a;        // radius of the resting circle in device px
@@ -879,6 +880,10 @@ uniform float u_glint;    // one-shot glass reflection sweep at the end of the i
 uniform float u_introColor; // 0..1: glass gains the orb palette during its awakening
 uniform vec3  u_tint;       // colour of the chosen language
 uniform float u_tintAmt;    // 0..1 how strongly the orb carries it
+uniform float u_word;       // 0 = orb .. 1 = the word WELCOME! (springs, so it overshoots a little)
+uniform float u_wordHW;     // half the word's width, in orb units
+uniform float u_wob;        // 0..1 how strongly the shape wobbles like jelly while it changes
+uniform sampler2D u_wtex;   // the word as a signed distance field, in texture pixels (positive outside the letters)
 out vec4 o;
 
 const float N = 2.0;        // exponent 2 = true circle at rest, true oval once stretched
@@ -936,6 +941,22 @@ const float PILL_W = 1.45;   // half the pill's length; the radius of its ends i
 float sdPill(vec2 q) { return sdRB(q, vec2(PILL_W, 0.50), vec4(0.50)); }
 float pillK() { return 0.0; }   // the pill is retired: the orb stays a circle while speaking
 
+// the word as a signed distance, in orb units (negative inside the letters)
+vec2 sdText(vec2 q) {   // x = the crisp letters, y = a softened, rounded copy of them
+  // a faint liquid sway so the letters never sit perfectly still
+  vec2 qq = q + 0.010 * vec2(sin(q.y * 3.0 + u_time * 1.3), sin(q.x * 2.2 - u_time * 1.1));
+  vec2 uv = vec2(qq.x / (2.0 * u_wordHW) + 0.5, 0.5 - qq.y / (2.0 * u_wordHW * 0.1875));
+  vec2 sdq = texture(u_wtex, uv).rg * (2.0 * u_wordHW / 1536.0);
+  return min(sdq, vec2(0.30));
+}
+
+// the scale of the outline's field during the change of shape: the orb (1.0), the bar (0.46) and the letters (0.22)
+float wordScale(float wk) {
+  float e1 = smoothstep(0.0, 1.0, clamp(wk / 0.62, 0.0, 1.0));
+  float e2 = smoothstep(0.0, 1.0, clamp((wk - 0.38) / 0.62, 0.0, 1.0));
+  return mix(mix(1.0, 0.46, e1), 0.22, e2);
+}
+
 // radial distance to the orb outline (1.0 on the edge), with a soft ripple while speaking.
 float R(vec2 q) {
   vec2 d = max(abs(q), vec2(1e-4));
@@ -947,6 +968,26 @@ float R(vec2 q) {
               + u_speak * 0.25 * sin(5.0 * th - u_rphase * 10.0);
   float pert = (u_speak * (0.006 + 0.014 * u_level) + (1.0 - u_speak) * 0.004) * lobes;
   float rc0 = r / (1.0 + pert);
+  // welcome: the outline melts from the circle into the letters
+  float wk = clamp(u_word, 0.0, 1.0);
+  if (wk > 0.001) {
+    // stage 1: the circle stretches sideways into a bar as long as the word (its distance field is blended with the
+    // bar's, so the outline flows rather than pops); stage 2: gaps open in the bar and it settles into the letters
+    float e1 = smoothstep(0.0, 1.0, clamp(wk / 0.62, 0.0, 1.0));
+    float e2 = smoothstep(0.0, 1.0, clamp((wk - 0.38) / 0.62, 0.0, 1.0));
+    // jelly: the whole shape ripples while it changes
+    vec2 qw = q + u_wob * vec2(0.07 * sin(u_time * 17.0 + q.y * 4.5 + q.x * 1.3), 0.06 * sin(u_time * 14.0 + q.x * 2.6));
+    float dO = rc0 - 1.0;
+    float dB = sdRB(qw, vec2(u_wordHW * 0.93, 0.46), vec4(0.46));
+    vec2 dWv = sdText(qw);
+    float dW = mix(dWv.y, dWv.x, smoothstep(0.55, 1.0, e2));   // rounded at first, crisp by the end
+    float dM = mix(mix(dO, dB, e1), dW, e2);
+    float sM = wordScale(wk);
+    rc0 = 1.0 + dM / sM;
+    // inside the glass the distance field has creases along the middle of every stroke, which would show up as seams
+    // in the lighting; a smooth floor flattens them
+    rc0 = 0.5 * (rc0 + 0.5 + sqrt((rc0 - 0.5) * (rc0 - 0.5) + 0.04));
+  }
   float m = clamp(u_mic, 0.0, 1.25);
   if (m < 0.001) return rc0;
   float rm = 1.0 + sdCap(q) / 0.409;                  // 1 on the capsule's edge, 0 along its centre line
@@ -1100,6 +1141,10 @@ void main() {
   vec2 g = vec2(R(q + vec2(e, 0.0)) - R(q - vec2(e, 0.0)),
                 R(q + vec2(0.0, e)) - R(q - vec2(0.0, e)));
   vec2 gd = g / max(length(g), 1e-5);
+  // for the word, the edge direction fades to nothing where the glass is flat (it flips across the middle of a stroke
+  // and would draw a seam in every light that uses it)
+  float wkG = clamp(u_word, 0.0, 1.0);
+  gd *= mix(1.0, smoothstep(0.30, 0.80, length(g) / 0.024 * wordScale(wkG)), wkG);
   float edgeAmt = smoothstep(mix(0.35, 0.68, pillK()), 1.0, rc);
   vec3 n = normalize(vec3(gd * edgeAmt * 0.95, sqrt(max(1.0 - rc * rc * rc * 0.9, 0.04))));
 
@@ -1198,7 +1243,7 @@ void main() {
 
   float spill = exp(-pow(s.y / 0.45, 2.0)) * exp(-pow(s.x / 0.9, 2.0));
   col += vec3(0.30, 0.22, 0.35) * spill * (0.07 + 0.10 * u_level * u_speak);
-  col += (bandCol * 0.95 + blobs(sw) * blobW) * u_introColor;
+  col += (bandCol * 0.95 + blobs(sw * mix(1.0, 0.32, clamp(u_word, 0.0, 1.0))) * blobW * (1.0 - 0.85 * clamp(u_word, 0.0, 1.0))) * u_introColor;   // the word stays aqua, so the orb's colours step back
   col += motes * 1.0 * (1.0 - Ls) * u_introColor;   // dark backdrop: the lights glow
 
   // light on the glass
@@ -1222,6 +1267,28 @@ void main() {
   float soft = exp(-(bx * bx + by * by) * 1.7);
   float arcs = (ring * 0.30 + sheen * 0.07) * (0.8 + 0.5 * u_level * u_speak) * (1.0 - 0.70 * pillK());
   col += (arcs + soft * 0.11) * topMask * lit * vec3(0.86, 0.93, 1.0);
+  // the word: slow liquid colour in the glass, a soft inner rim (brighter on the upper edges) and a fine bright edge
+  if (u_word > 0.001) {
+    float wkk = clamp(u_word, 0.0, 1.0);
+    // inflated aqua glass: pale at the top, deeper blue toward the bottom, a darker blue rim round every letter
+    float vY = clamp(0.5 + q.y / 0.9, 0.0, 1.0);
+    vec3 bodyC = mix(vec3(0.10, 0.66, 1.00), vec3(0.80, 0.97, 1.0), smoothstep(0.1, 0.95, vY));
+    float edgeW = smoothstep(0.55, 0.98, rc);
+    vec3 wc = mix(bodyC * 0.95, vec3(0.02, 0.33, 0.80), edgeW * 0.75);
+    // light from the upper left: a thin bright line just inside the edges that face it, a soft sheen behind it,
+    // and a cool glow pooled along the edges that face away (light bent through the glass)
+    float ndl = dot(gd, normalize(vec2(-0.55, 0.75)));
+    float hiLine = exp(-pow((rc - 0.80) / 0.07, 2.0)) * smoothstep(0.05, 0.75, ndl);
+    float hiSoft = exp(-pow((rc - 0.70) / 0.16, 2.0)) * smoothstep(0.0, 0.9, ndl);
+    float lowGlow = exp(-pow((rc - 0.80) / 0.13, 2.0)) * smoothstep(0.0, 0.8, -ndl);
+    // the edge directions mean nothing where the glass is flat (the middle of a stroke): fade the lighting out there
+    float flatW = smoothstep(0.30, 0.80, length(g) / 0.024 * wordScale(wkk));
+    hiLine *= flatW; hiSoft *= flatW; lowGlow *= flatW;
+    wc += vec3(1.0) * (hiLine * 1.10 + hiSoft * 0.30);
+    wc += vec3(0.55, 0.95, 1.0) * lowGlow * 0.50;
+    wc += vec3(0.90, 0.97, 1.0) * exp(-pow((rc - 0.985) / 0.02, 2.0)) * 0.20;
+    col += wc * 1.15 * wkk * u_introColor;
+  }
   col += hear * lm * u_introColor;   // sound waves arriving
   // the chosen language tints the glass: a little at the rim, more toward the bottom
   col += u_tint * u_tintAmt * (0.05 + 0.10 * rc * rc) * (0.6 + 0.4 * sd(0.8, -0.8, q.y));
@@ -1462,7 +1529,7 @@ void main() {
 
   var U = {};
   ["u_res", "u_center", "u_a", "u_scale", "u_time", "u_speak", "u_level", "u_bands",
-   "u_floorLevel", "u_floorBands", "u_glint", "u_introColor", "u_tint", "u_tintAmt", "u_listen", "u_mic", "u_from", "u_to", "u_wave", "u_origin", "u_maxd", "u_ripple", "u_rphase", "u_drop", "u_dropCol", "u_impact", "u_absorb"].forEach(function (n) {
+   "u_floorLevel", "u_floorBands", "u_glint", "u_introColor", "u_tint", "u_tintAmt", "u_listen", "u_mic", "u_from", "u_to", "u_wave", "u_origin", "u_maxd", "u_ripple", "u_rphase", "u_drop", "u_dropCol", "u_impact", "u_absorb", "u_word", "u_wordHW", "u_wtex", "u_wob"].forEach(function (n) {
     U[n] = gl.getUniformLocation(prog, n);
   });
 
@@ -1769,6 +1836,7 @@ void main() {
       if (audioActive) stopAudio();
     }
     listening = on;
+    if (on) endWelcome();
     if (!on && recActive && rec) {   // listening was cut short (for example by a reply starting): drop the recognition too
       var rr = rec; recActive = false; rec = null;
       msgInput.placeholder = PLACEHOLDER;
@@ -1790,6 +1858,7 @@ void main() {
     if (!fromDemo && demoActive) stopDemo();
     if (!fromDemo && audioActive) stopAudio();
     speaking = !!on;
+    if (speaking) endWelcome();
     if (!speaking) endCaption();
     btn.textContent = speaking ? "Stop" : "Speak";
     btn.setAttribute("aria-pressed", speaking ? "true" : "false");
@@ -2066,6 +2135,7 @@ void main() {
   }
   function startConversationFromOrb() {
     if (introActive || flightBusy) return;
+    endWelcome();
     if (!recActive && !listening) {
       // Never resume a previous test/demo utterance when the microphone ends.
       clearTimeout(replyTimer);
@@ -2316,6 +2386,7 @@ void main() {
 
   function chooseLanguage(code, row, ball) {
     if (flightBusy) return;
+    endWelcome();
     var L = LANGS[code];
     currentLang = code;
     row.classList.add("chosen");
@@ -2397,6 +2468,127 @@ void main() {
   };
 
   // ---- loop -----------------------------------------------------------
+  // ---- the welcome: when the page opens the orb melts into the word "WELCOME!" in glass, holds, then flows back ----
+  // the whole welcome lasts 2.2 seconds: 0.6 wobbling into the word, 1.0 holding it, 0.6 wobbling back into the orb
+  var WORD_IN_MS = 600, WORD_HOLD_MS = 1000, WORD_OUT_MS = 600;
+  var wT0 = 0, wordWob = 0, wKick = 0;        // start time, wobble strength (0..1) and which jelly kicks have been given
+  var WTX_W = 1536, WTX_H = 288;              // size of the word's distance-field texture
+  var wState = reduce ? "done" : "wait";      // wait -> in -> hold -> out -> done (skipped for reduced motion)
+  var wAt = 0, wordMix = 0, wordVel = 0, wordGoal = 0, wordReady = false;
+  function endWelcome() {                     // any interaction lets the orb come back at once
+    if (wState === "done") return;
+    wState = (wState === "wait") ? "done" : "abort";
+  }
+  // a placeholder texture until the real one is built, so the sampler is never left empty
+  var wordTex = gl.createTexture();
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindTexture(gl.TEXTURE_2D, wordTex);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RG16F, 1, 1, 0, gl.RG, gl.FLOAT, new Float32Array([64, 64]));
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  gl.uniform1i(U.u_wtex, 0);
+
+  // exact Euclidean distance transform along one row or column (Felzenszwalb & Huttenlocher)
+  function edt1d(g, off, stride, len, f, v, z) {
+    var INF = 1e20, k = 0, s, q, r;
+    v[0] = 0; z[0] = -INF; z[1] = INF;
+    f[0] = g[off];
+    for (q = 1; q < len; q++) {
+      f[q] = g[off + q * stride];
+      var q2 = q * q;
+      do { r = v[k]; s = (f[q] - f[r] + q2 - r * r) / (q - r) / 2; } while (s <= z[k] && --k > -1);
+      k++; v[k] = q; z[k] = s; z[k + 1] = INF;
+    }
+    for (q = 0, k = 0; q < len; q++) {
+      while (z[k + 1] < q) k++;
+      r = v[k];
+      g[off + q] = f[r] + (q - r) * (q - r);
+    }
+  }
+  function buildWordTexture() {
+    try {
+      var c = document.createElement("canvas");
+      c.width = WTX_W; c.height = WTX_H;
+      var x = c.getContext("2d", { willReadFrequently: true });
+      var txt = "WELCOME!", stroke = 22;
+      var fam = '"Manrope", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif';
+      x.font = "800 220px " + fam;
+      var size = Math.min(260, 220 * (WTX_W - 120 - stroke) / x.measureText(txt).width);
+      x.font = "800 " + size + "px " + fam;
+      x.textAlign = "center"; x.textBaseline = "alphabetic";
+      var m = x.measureText(txt);
+      var base = WTX_H / 2 + (m.actualBoundingBoxAscent - m.actualBoundingBoxDescent) / 2;
+      x.lineJoin = "round"; x.lineWidth = stroke;        // a stroke round the letters makes them plump and bubbly
+      x.fillStyle = x.strokeStyle = "#fff";
+      x.fillText(txt, WTX_W / 2, base);
+      x.strokeText(txt, WTX_W / 2, base);
+      var px = x.getImageData(0, 0, WTX_W, WTX_H).data, n = WTX_W * WTX_H, INF = 1e20;
+      var gO = new Float64Array(n), gI = new Float64Array(n), i;
+      for (i = 0; i < n; i++) {
+        var a = px[i * 4 + 3] / 255;
+        if (a >= 1) { gO[i] = 0; gI[i] = INF; }
+        else if (a <= 0) { gO[i] = INF; gI[i] = 0; }
+        else { var d = 0.5 - a; gO[i] = d > 0 ? d * d : 0; gI[i] = d < 0 ? d * d : 0; }
+      }
+      var mx = Math.max(WTX_W, WTX_H), f = new Float64Array(mx), v = new Uint16Array(mx), z = new Float64Array(mx + 1);
+      [gO, gI].forEach(function (g) {
+        for (var yy = 0; yy < WTX_H; yy++) edt1d(g, yy * WTX_W, 1, WTX_W, f, v, z);
+        for (var xx = 0; xx < WTX_W; xx++) edt1d(g, xx, WTX_W, WTX_H, f, v, z);
+      });
+      var sdf = new Float32Array(n), tmp = new Float32Array(n);
+      // clamped to the range the shader uses (0.30 orb units is about 64 texels), which keeps the half-float values precise
+      for (i = 0; i < n; i++) sdf[i] = Math.max(-64, Math.min(64, Math.sqrt(gO[i]) - Math.sqrt(gI[i])));
+      // a light blur keeps the glass normals smooth along the edges
+      var yy2, xx2, o;
+      for (yy2 = 0; yy2 < WTX_H; yy2++) for (xx2 = 0; xx2 < WTX_W; xx2++) {
+        o = yy2 * WTX_W + xx2;
+        tmp[o] = (sdf[o] * 2 + sdf[xx2 > 0 ? o - 1 : o] + sdf[xx2 < WTX_W - 1 ? o + 1 : o]) / 4;
+      }
+      for (yy2 = 0; yy2 < WTX_H; yy2++) for (xx2 = 0; xx2 < WTX_W; xx2++) {
+        o = yy2 * WTX_W + xx2;
+        sdf[o] = (tmp[o] * 2 + tmp[yy2 > 0 ? o - WTX_W : o] + tmp[yy2 < WTX_H - 1 ? o + WTX_W : o]) / 4;
+      }
+      // a second, heavily softened copy of the field: the orb flows through this rounded version of the word and the
+      // crisp letters sharpen out of it at the end, so the middle of the change has no jagged corners
+      function blurBox(src, r) {
+        var out = new Float32Array(src.length), t2 = new Float32Array(src.length), win = 2 * r + 1, sum, xx, yy, k;
+        for (yy = 0; yy < WTX_H; yy++) {
+          var row = yy * WTX_W; sum = 0;
+          for (k = -r; k <= r; k++) sum += src[row + Math.min(WTX_W - 1, Math.max(0, k))];
+          for (xx = 0; xx < WTX_W; xx++) {
+            t2[row + xx] = sum / win;
+            sum += src[row + Math.min(WTX_W - 1, xx + r + 1)] - src[row + Math.max(0, xx - r)];
+          }
+        }
+        for (xx = 0; xx < WTX_W; xx++) {
+          sum = 0;
+          for (k = -r; k <= r; k++) sum += t2[Math.min(WTX_H - 1, Math.max(0, k)) * WTX_W + xx];
+          for (yy = 0; yy < WTX_H; yy++) {
+            out[yy * WTX_W + xx] = sum / win;
+            sum += t2[Math.min(WTX_H - 1, yy + r + 1) * WTX_W + xx] - t2[Math.max(0, yy - r) * WTX_W + xx];
+          }
+        }
+        return out;
+      }
+      var soft = blurBox(blurBox(sdf, 14), 14), rg = new Float32Array(n * 2);
+      for (i = 0; i < n; i++) { rg[2 * i] = sdf[i]; rg[2 * i + 1] = soft[i]; }
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, wordTex);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RG16F, WTX_W, WTX_H, 0, gl.RG, gl.FLOAT, rg);
+      wordReady = true;
+    } catch (err) { console.error("welcome texture failed", err); wState = "done"; }
+  }
+  (function startWordBuild() {
+    var started = false;
+    function go() { if (started) return; started = true; setTimeout(buildWordTexture, 0); }
+    if (document.fonts && document.fonts.load) {
+      document.fonts.load('800 100px "Manrope"', "WELCOME!").then(go, go);
+      setTimeout(go, 2500);
+    } else go();
+  })();
+
   var t0 = performance.now(), last = t0;
   function frame(now) {
     var dt = Math.min((now - last) / 1000, 1 / 20);
@@ -2489,7 +2681,28 @@ void main() {
     }
 
     var intro = introVisual(now);
+    // the welcome word: wait for the entrance and the texture, melt in, hold, melt back
+    if (wState === "wait" && !introActive && wordReady) { wState = "run"; wT0 = now; wKick = 0; vx += 1.3; vy -= 1.1; }
+    if (wState === "run") {
+      var te = now - wT0, ease;
+      if (te < WORD_IN_MS) {                                      // flowing into the word, wobbling as it goes
+        ease = te / WORD_IN_MS; wordMix = ease * ease * (3 - 2 * ease);
+        wordWob = 0.35 + 0.65 * Math.sin(Math.PI * ease);
+      } else if (te < WORD_IN_MS + WORD_HOLD_MS) {                // arrived: a jelly jolt, then the wobble settles
+        if (wKick < 1) { wKick = 1; vx -= 1.5; vy += 1.3; }
+        wordMix = 1;
+        wordWob = Math.exp(-(te - WORD_IN_MS) / 130);
+      } else if (te < WORD_IN_MS + WORD_HOLD_MS + WORD_OUT_MS) {  // flowing back into the orb, wobbling again
+        if (wKick < 2) { wKick = 2; vx += 1.0; vy -= 0.9; }
+        ease = (te - WORD_IN_MS - WORD_HOLD_MS) / WORD_OUT_MS; wordMix = 1 - ease * ease * (3 - 2 * ease);
+        wordWob = 0.35 + 0.65 * Math.sin(Math.PI * ease);
+      } else { wState = "done"; wordMix = 0; wordWob = 0; vx -= 1.4; vy += 1.2; }   // back to the orb with one last jelly jiggle
+    } else if (wState === "abort") {                              // interrupted: melt straight back into the orb
+      wordMix = Math.max(0, wordMix - dt / 0.45); wordWob = wordMix * 0.6;
+      if (wordMix <= 0) { wState = "done"; wordWob = 0; }
+    }
     var orbD = Math.min(H * ORB_H, W * ORB_W);
+    var wordHW = Math.min(3.6, (W * 0.44) / Math.max(1, orbD / 2 * intro.size));
     gl.uniform2f(U.u_res, W, H);
     gl.uniform2f(U.u_center, W * 0.5, H * ORB_Y);
     gl.uniform1f(U.u_a, orbD / 2 * intro.size);
@@ -2501,6 +2714,9 @@ void main() {
     gl.uniform1f(U.u_floorLevel, Math.max(floorLevel, intro.ambient));
     gl.uniform3f(U.u_floorBands, floorBands[0], floorBands[1], floorBands[2]);
     gl.uniform1f(U.u_listen, listenMix);
+    gl.uniform1f(U.u_word, wordMix);
+    gl.uniform1f(U.u_wob, wordWob);
+    gl.uniform1f(U.u_wordHW, wordHW);
     gl.uniform1f(U.u_mic, micMix);
     if (dropAnim) {
       var DUR = 1150, tt = (now - dropAnim.t0) / DUR;
