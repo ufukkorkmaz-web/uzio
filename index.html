@@ -869,6 +869,10 @@ uniform float u_to;       // theme the wave is bringing in
 uniform float u_wave;     // 0..1 progress of the theme wave
 uniform vec2  u_origin;   // where the wave starts (the theme switch), device px
 uniform float u_maxd;     // distance from the origin to the farthest corner
+uniform vec4  u_drop;     // the language droplet: x, y, radius (device px) and strength; strength 0 = none
+uniform vec3  u_dropCol;  // its colour
+uniform vec2  u_impact;   // where it touches the orb
+uniform float u_absorb;   // 0..1 progress of the ripple it sends through the glass; -1 = none
 uniform float u_ripple;   // 0..1 how strongly rings leave the orb (speech energy, eased)
 uniform float u_rphase;   // ring clock: runs faster when the voice is louder
 uniform float u_glint;    // one-shot glass reflection sweep at the end of the intro
@@ -940,8 +944,7 @@ float R(vec2 q) {
   float m = clamp(u_mic, 0.0, 1.25);
   if (m < 0.001) return rc0;
   float rm = 1.0 + sdCap(q) / 0.409;                  // 1 on the capsule's edge, 0 along its centre line
-  float pertM = (0.010 + 0.030 * u_level) * lobes;                 // the capsule's edge ripples softly with what it hears
-  return mix(rc0, rm / (1.0 + 0.5 * pert + pertM * clamp(u_mic, 0.0, 1.0)), m);        // the outline stretches from the circle into the capsule
+  return mix(rc0, rm / (1.0 + 0.5 * pert), m);        // the outline stretches from the circle into the capsule
 }
 
 vec3 ramp(float u, float x) {
@@ -1060,13 +1063,6 @@ void main() {
   float a = u_a * u_scale.x;
   float b = u_a * u_scale.y;
   vec2 q = p / vec2(a, b);
-  // listening: the whole microphone sways a little, and more when it hears the voice
-  float mw = clamp(u_mic, 0.0, 1.0);
-  if (mw > 0.001) {
-    float ang = mw * (0.032 * sin(u_time * 1.25) + 0.018 * sin(u_time * 2.1 + 1.0) + u_level * 0.07 * sin(u_time * 4.3));
-    float ca = cos(ang), sa = sin(ang);
-    q = vec2(ca * q.x + sa * q.y, -sa * q.x + ca * q.y);
-  }
 
   // theme wave: a soft-edged circle growing out of the switch; inside it the new theme, outside the old one
   float dd = distance(gl_FragCoord.xy, u_origin) / max(u_maxd, 1.0);
@@ -1077,6 +1073,18 @@ void main() {
   float r = R(q);
   float fw = max(fwidth(r), 1e-4);
   float alpha = 1.0 - smoothstep(1.0 - fw, 1.0 + fw, r);
+  float pxs = 0.5 * (a + b);                       // the orb's radius in device px
+  vec2 dv = gl_FragCoord.xy - u_drop.xy;
+  bool dropOn = u_drop.w > 0.001 && u_drop.z > 0.5;
+  if (dropOn) {
+    // the droplet and the orb are one liquid: where they meet they pull together into a neck
+    float dO = (r - 1.0) * pxs;
+    float dD = length(dv) - u_drop.z;
+    float kk = max(u_drop.z * 0.95, 1.0);
+    float hh = clamp(0.5 + 0.5 * (dD - dO) / kk, 0.0, 1.0);
+    float dU = mix(dD, dO, hh) - kk * hh * (1.0 - hh);
+    alpha = max(alpha, (1.0 - smoothstep(-1.0, 1.0, dU)) * min(1.0, u_drop.w * 1.5));
+  }
   float rc = min(r, 1.0);
   // the pill is only half as tall as the orb, so its edge effects are squeezed into the same thin rim the orb has
   float rcR = 1.0 - (1.0 - rc) * mix(1.0, 0.45, pillK());
@@ -1211,6 +1219,19 @@ void main() {
   }
   // dark surroundings: the colour glows, adding light to the glass.
   // light surroundings: the colour sits in the glass like ink, so it stays visible on a bright backdrop.
+  if (dropOn) {
+    // inside the glass the droplet is a soft glow of its colour that dissolves into the orb
+    float inside = 1.0 - smoothstep(1.0, 1.05, r);
+    col += u_dropCol * exp(-dot(dv, dv) / (u_drop.z * u_drop.z * 1.7)) * 0.55 * u_drop.w * inside;
+  }
+  if (u_absorb >= 0.0) {
+    // a soft ring of light runs out from where the droplet entered, and a wash of its colour follows it
+    float rr = length(gl_FragCoord.xy - u_impact) / pxs;
+    float rad = u_absorb * 2.2;
+    float rg = exp(-pow((rr - rad) / 0.20, 2.0)) * pow(1.0 - u_absorb, 1.5);
+    col += (vec3(0.80, 0.90, 1.0) * 0.30 + u_dropCol * 0.30) * rg;
+    col += u_dropCol * 0.22 * exp(-pow(rr / (0.35 + 1.5 * u_absorb), 2.0)) * (1.0 - u_absorb);
+  }
   vec3 darkRes = 1.0 - exp(-(base + col) * 1.4);
   float em = max(col.r, max(col.g, col.b));
   vec3 hue = col / max(em, 1e-4);
@@ -1297,6 +1318,15 @@ void main() {
     vec3 darkRip = bg + vec3(0.40, 0.72, 1.0) * rip * 0.085;
     vec3 lightRip = mix(bg, vec3(0.42, 0.66, 0.70), clamp(rip * 0.12, 0.0, 1.0));
     bg = mix(lightRip, darkRip, th);
+  }
+  if (dropOn) {
+    float outsideO = smoothstep(1.0, 1.04, r);
+    vec2 l = dv / u_drop.z;
+    float ll = min(length(l), 1.0);
+    vec2 hl = l - vec2(-0.30, 0.42);
+    vec3 dropShade = u_dropCol * (0.92 - 0.38 * smoothstep(0.5, 1.0, ll))
+                   + vec3(0.92, 0.96, 1.0) * 0.50 * exp(-dot(hl, hl) * 12.0);
+    col = mix(col, dropShade, outsideO * min(1.0, u_drop.w * 2.0));
   }
   vec3 outc = col * alpha + bg * (1.0 - alpha);
 
@@ -1397,7 +1427,7 @@ void main() {
 
   var U = {};
   ["u_res", "u_center", "u_a", "u_scale", "u_time", "u_speak", "u_level", "u_bands",
-   "u_floorLevel", "u_floorBands", "u_glint", "u_introColor", "u_tint", "u_tintAmt", "u_listen", "u_mic", "u_from", "u_to", "u_wave", "u_origin", "u_maxd", "u_ripple", "u_rphase"].forEach(function (n) {
+   "u_floorLevel", "u_floorBands", "u_glint", "u_introColor", "u_tint", "u_tintAmt", "u_listen", "u_mic", "u_from", "u_to", "u_wave", "u_origin", "u_maxd", "u_ripple", "u_rphase", "u_drop", "u_dropCol", "u_impact", "u_absorb"].forEach(function (n) {
     U[n] = gl.getUniformLocation(prog, n);
   });
 
@@ -2205,60 +2235,45 @@ void main() {
   // A single copy rises from its fixed selector, becomes an elastic liquid-glass
   // droplet, then is absorbed into the central sphere. Nothing is left behind.
   var flightBusy = false;
+  var dropAnim = null;
+  var DROP_COL = { en: [0.36, 0.56, 1.0], de: [1.0, 0.72, 0.26], fr: [0.96, 0.44, 0.70] };
+  // The chosen sphere lifts out of the row, stretching as it flies (that part is the real glass ball). When it reaches
+  // the orb it becomes a drop of liquid: it touches, pulls a neck out of the orb, is drawn in, and a ring of light runs
+  // through the glass while the language colour spreads. All of the merging itself is drawn by the shader.
   function flyToOrb(ball, code) {
-    function arrive() { orbReact(); sfx.play("pill"); setTint(code); flightBusy = false; }
-    if (reduce || !ball.animate) { arrive(); return; }
+    function arrive() { sfx.play("pill"); flightBusy = false; }
+    if (reduce || !ball.animate) { orbReact(); setTint(code); arrive(); return; }
     flightBusy = true;
     var r = ball.getBoundingClientRect();
     var cr = canvas.getBoundingClientRect();
-    var dx = cr.left + cr.width * .5 - (r.left + r.width / 2);
-    var dy = cr.top + cr.height * (1 - ORB_Y) - (r.top + r.height / 2);
-    var bend = Math.abs(dx) < 10 ? 0 : (dx > 0 ? -1 : 1) * Math.min(60, Math.abs(dx) * .18);
-    var duration = 1050;
+    var orbRc = Math.min(cr.height * ORB_H, cr.width * ORB_W) / 2;
+    var cxC = cr.left + cr.width / 2, cyC = cr.top + cr.height * (1 - ORB_Y);
+    var r0 = Math.max(18, r.width * 0.42);                    // radius of the drop, css px
+    var tx = cxC, ty = cyC + orbRc + r0 * 0.7;                // just under the orb
+    var sx0 = r.left + r.width / 2, sy0 = r.top + r.height / 2;
+    var dx = tx - sx0, dy = ty - sy0;
+    var bend = Math.abs(dx) < 10 ? 0 : (dx > 0 ? -1 : 1) * Math.min(70, Math.abs(dx) * 0.22);
+    var tilt = dx > 15 ? -14 : (dx < -15 ? 14 : 0);
+    var se = r0 / (r.width / 2);
     var fly = ball.cloneNode(true);
     fly.classList.add("flying");
     fly.style.left = r.left + "px"; fly.style.top = r.top + "px";
     fly.style.width = r.width + "px"; fly.style.height = r.height + "px";
     document.body.appendChild(fly);
-    // Squash-and-stretch gives the impression that the small orb turns to fluid.
-    // The direction of the stretch is roughly aligned to its upward flight.
-    function tr(x, y, sx, sy, angle) {
-      return "translate("+x+"px,"+y+"px) rotate("+angle+"deg) scale("+sx+","+sy+")";
-    }
-    var tilt = dx > 15 ? -12 : (dx < -15 ? 12 : 0);
-    var animation = fly.animate([
-      {transform:tr(0,0,1,1,0), borderRadius:"50%", opacity:1, offset:0},
-      {transform:tr(dx*.12+bend*.5,dy*.12, .87,1.30,tilt), borderRadius:"45% 55% 55% 45%", opacity:1, offset:.24},
-      {transform:tr(dx*.50+bend,dy*.48,.70,1.55,tilt*.7),borderRadius:"43% 57% 52% 48%", opacity:1, offset:.52},
-      {transform:tr(dx*.83+bend*.3,dy*.80,1.20,.78,0),borderRadius:"50%",opacity:1,offset:.78},
-      {transform:tr(dx,dy,.49,.49,0),borderRadius:"50%",opacity:.9,offset:.93},
-      {transform:tr(dx,dy,.02,.02,0),borderRadius:"50%",opacity:0,offset:1}
-    ],{duration:duration,easing:"cubic-bezier(.42,0,.19,1)",fill:"forwards"});
-
-    // One brief, soft colour bloom INSIDE the destination, not a moving trail.
-    var merge = document.createElement("span");
-    merge.className = "lang-merge";
-    merge.style.setProperty("--merge-color", ({en:"rgba(94,169,255,.55)",de:"rgba(255,180,75,.55)",fr:"rgba(248,99,154,.55)"})[code]);
-    merge.style.left = (cr.left + cr.width*.5) + "px";
-    merge.style.top = (cr.top + cr.height*(1-ORB_Y)) + "px";
-    document.body.appendChild(merge);
-    merge.animate([
-      {transform:"translate(-50%,-50%) scale(.20)",opacity:0},
-      {transform:"translate(-50%,-50%) scale(.65)",opacity:.7,offset:.35},
-      {transform:"translate(-50%,-50%) scale(1.1)",opacity:0}
-    ],{duration:500,delay:duration*.79,easing:"ease-out",fill:"forwards"});
-    var done = false;
-    function finish() {
-      if (done) return;
-      done = true;
-      arrive();
-      // Remove both temporary elements as soon as the fusion completes.
-      fly.remove();
-      merge.remove();
-    }
-    setTimeout(finish, duration + 210);
-    animation.finished.catch(function(){});
+    function tr(x, y, a, b, ang) { return "translate(" + x + "px," + y + "px) rotate(" + ang + "deg) scale(" + a + "," + b + ")"; }
+    var anim = fly.animate([
+      { transform: tr(0, 0, 1, 1, 0), borderRadius: "50%", offset: 0 },
+      { transform: tr(dx * 0.10 + bend * 0.5, dy * 0.10 - 12, 0.90, 1.22, tilt), borderRadius: "46% 54% 54% 46%", offset: 0.22 },
+      { transform: tr(dx * 0.62 + bend, dy * 0.62, se * 0.92, se * 1.34, tilt * 0.4), borderRadius: "44% 56% 52% 48%", offset: 0.68 },
+      { transform: tr(dx, dy, se, se, 0), borderRadius: "50%", offset: 1 }
+    ], { duration: 600, easing: "cubic-bezier(.4,0,.25,1)", fill: "forwards" });
+    anim.finished.catch(function () {});
+    setTimeout(function () {
+      if (fly.parentNode) fly.parentNode.removeChild(fly);
+      dropAnim = { t0: performance.now(), cx: cxC, cy: cyC, ty: ty, r0: r0, orbR: orbRc, code: code, reacted: false, tinted: false, done: arrive };
+    }, 600);
   }
+  function easeIn3(x) { x = Math.max(0, Math.min(1, x)); return x * x * x; }
 
   function chooseLanguage(code, row, ball) {
     if (flightBusy) return;
@@ -2274,7 +2289,7 @@ void main() {
     window.dispatchEvent(new CustomEvent("orb:language", { detail: { language: code, label: L.label } }));
     flyToOrb(ball, code);
     clearTimeout(replyTimer);
-    replyTimer = setTimeout(function () { reply(L.reply); }, reduce ? 700 : 1650);   // the reply starts once the sphere has arrived
+    replyTimer = setTimeout(function () { reply(L.reply); }, reduce ? 700 : 1750);   // the reply starts once the sphere has been absorbed
   }
   function addGreeting() {
     var row = document.createElement("div");
@@ -2424,9 +2439,9 @@ void main() {
     var breath = Math.sin(t * 1.25);
     var txs = 1 + pulse + jelly - listenMix * (0.035 - 0.02 * level) + iw * (0.011 * breath + 0.005 * Math.sin(t * 0.8 + 1.2));
     var tys = 1 + pulse - jelly * 0.8 - listenMix * (0.035 - 0.02 * level) + iw * (0.011 * Math.sin(t * 1.25 - 0.35) + 0.005 * Math.sin(t * 1.05 + 2.0));
-    if (listenMix > 0.001) {   // the microphone breathes a little, and jolts softly with each burst of speech
-      txs += listenMix * (0.009 * Math.sin(t * 2.1) + 0.030 * level * Math.sin(t * 7.3));
-      tys += listenMix * (0.009 * Math.sin(t * 1.7 + 1.0) + 0.030 * level * Math.sin(t * 6.1 + 2.0));
+    if (listenMix > 0.001) {   // the microphone breathes in with the rhythm of the voice it hears, and settles between words
+      var breathIn = listenMix * (0.040 * level + 0.006 * Math.sin(t * 1.4));
+      txs += breathIn; tys += breathIn * 1.15;
     }
     var k = 110 + 40 * speakMix, c = 15 - 3.5 * speakMix, steps = 2, h = dt / steps;   // only slightly springier while speaking
     for (var i = 0; i < steps; i++) {
@@ -2448,6 +2463,28 @@ void main() {
     gl.uniform3f(U.u_floorBands, floorBands[0], floorBands[1], floorBands[2]);
     gl.uniform1f(U.u_listen, listenMix);
     gl.uniform1f(U.u_mic, micMix);
+    if (dropAnim) {
+      var DUR = 1000, tt = (now - dropAnim.t0) / DUR;
+      if (tt >= 1) { var dn = dropAnim.done; dropAnim = null; dn(); }
+      else {
+        var da = dropAnim;
+        var pp = easeIn3(Math.min(1, tt / 0.66));
+        var ycss = da.ty + (da.cy - da.ty) * pp;
+        var rad = da.r0 * (1 - 0.40 * Math.min(1, tt / 0.66));
+        var wd = tt < 0.62 ? 1 : Math.max(0, 1 - (tt - 0.62) / 0.38);
+        var dc = DROP_COL[da.code];
+        gl.uniform4f(U.u_drop, W * 0.5, H - ycss * DPR, rad * DPR, wd);
+        gl.uniform3f(U.u_dropCol, dc[0], dc[1], dc[2]);
+        gl.uniform2f(U.u_impact, W * 0.5, H - (da.cy + da.orbR) * DPR);
+        gl.uniform1f(U.u_absorb, tt < 0.10 ? -1 : Math.min(1, (tt - 0.10) / 0.88));
+        if (!da.reacted && tt >= 0.12) { da.reacted = true; orbReact(); }
+        if (!da.tinted && tt >= 0.40) { da.tinted = true; setTint(da.code); }
+      }
+    }
+    if (!dropAnim) {
+      gl.uniform4f(U.u_drop, 0, 0, 0, 0);
+      gl.uniform1f(U.u_absorb, -1);
+    }
     gl.uniform1f(U.u_from, fromT);
     gl.uniform1f(U.u_to, toT);
     gl.uniform1f(U.u_wave, wave);
