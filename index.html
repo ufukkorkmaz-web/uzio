@@ -1047,21 +1047,21 @@ vec3 band(vec2 s, int layer) {
     y0 = 0.0;
     thickness = 0.095;
   }
-  float gain = layer == 0 ? 0.175 : (layer == 1 ? 0.155 : 0.125);
+  float gain = layer == 0 ? 0.215 : (layer == 1 ? 0.190 : 0.155);   // taller swings
   float A = u_speak * (0.009 + gain * energy) * env;
   float yc = y0 * u_speak + 0.055 * (1.0 - x*x) - 0.035*x + A*wave;
   // Wider, softer ribbons with a gentler centre and a broader surrounding glow.
   // The lines feel more atmospheric and less sharply drawn.
   float d = s.y - yc;
   float w = layer == 0 ? 0.026 : (layer == 1 ? 0.020 : 0.015);
-  float core = exp(-(d * d) / (w * w * 1.35)) * 0.78;
-  float halo = exp(-(d * d) / (w * w * 34.0)) * 0.30;
-  float bloom = exp(-(d * d) / (w * w * 150.0)) * 0.14;
+  float core = exp(-(d * d) / (w * w * 1.35)) * 1.00;
+  float halo = exp(-(d * d) / (w * w * 34.0)) * 0.40;
+  float bloom = exp(-(d * d) / (w * w * 150.0)) * 0.18;
   vec3 lineCol = layer == 0 ? ramp(0.20, x) : (layer == 1 ? ramp(0.44, x) : ramp(0.64, x));
   vec3 col = lineCol * (core + halo + bloom) + vec3(1.0, 0.92, 0.85) * core * 0.18;
   // a wider, softer pool of the line's colour that follows the wave and swells with its energy
-  col += lineCol * exp(-(d * d) / 0.085) * (0.07 + 0.34 * energy);
-  return col * bell * (0.42 + 0.72 * energy * u_speak);
+  col += lineCol * exp(-(d * d) / 0.085) * (0.10 + 0.42 * energy);
+  return col * bell * (0.55 + 0.85 * energy * u_speak);
 }
 
 void main() {
@@ -1134,13 +1134,28 @@ void main() {
     vec2 cell = floor(gp);
     vec2 fc = fract(gp);
     vec2 mp = 0.2 + 0.6 * vec2(hash(cell), hash(cell + 7.3));
-    float mote = smoothstep(0.12, 0.0, length(fc - mp)) * step(0.70, hash(cell + 3.1));
+    float mote = smoothstep(0.12, 0.0, length(fc - mp)) * step(0.55, hash(cell + 3.1));
     float tw = 0.5 + 0.5 * sin(u_time * 2.0 + hash(cell) * 20.0);
     float region = exp(-pow(s.y / 0.55, 2.0)) * (1.0 - smoothstep(0.35, 0.85, abs(s.x)));
-    float drive = 0.12 + 0.60 * u_bands.z + 0.30 * u_bands.y;
+    float drive = 0.20 + 0.60 * u_bands.z + 0.30 * u_bands.y;
     moteK = mote * tw * region * drive * u_speak;
     moteC = ramp(0.10 + 0.70 * hash(cell + 1.0), 0.0);
     motes = (moteC * 0.8 + vec3(0.2)) * moteK;
+    // a second, finer layer of glints: they drift up faster, twinkle sharply and carry a little cross of light
+    vec2 gp2 = s * vec2(15.0, 11.0) + vec2(0.0, -u_time * 0.6);
+    vec2 c2 = floor(gp2);
+    vec2 f2 = fract(gp2);
+    vec2 mp2 = 0.2 + 0.6 * vec2(hash(c2 + 11.7), hash(c2 + 23.1));
+    vec2 dd2 = f2 - mp2;
+    float pt = smoothstep(0.10, 0.0, length(dd2));
+    float crs = (exp(-abs(dd2.x) * 40.0) * exp(-abs(dd2.y) * 7.0) + exp(-abs(dd2.y) * 40.0) * exp(-abs(dd2.x) * 7.0)) * 0.5;
+    float tw2 = pow(0.5 + 0.5 * sin(u_time * 3.4 + hash(c2) * 30.0), 3.0);
+    float region2 = exp(-pow(s.y / 0.70, 2.0)) * (1.0 - smoothstep(0.45, 0.95, abs(s.x)));
+    float drive2 = 0.25 + 0.70 * u_bands.z + 0.40 * u_bands.y;
+    float spark = (pt + 0.8 * crs) * step(0.60, hash(c2 + 5.9)) * tw2 * region2 * drive2 * u_speak;
+    vec3 sparkC = mix(ramp(0.10 + 0.70 * hash(c2 + 2.0), 0.0), vec3(1.0), 0.45);
+    moteK += spark * 0.9;
+    motes += sparkC * spark * 1.1;
   }
 
   // smoked top; lower half is cool neutral glass with slow liquid colour flowing in it
@@ -1184,7 +1199,7 @@ void main() {
   float spill = exp(-pow(s.y / 0.45, 2.0)) * exp(-pow(s.x / 0.9, 2.0));
   col += vec3(0.30, 0.22, 0.35) * spill * (0.07 + 0.10 * u_level * u_speak);
   col += (bandCol * 0.95 + blobs(sw) * blobW) * u_introColor;
-  col += motes * 0.8 * (1.0 - Ls) * u_introColor;   // dark backdrop: the lights glow
+  col += motes * 1.0 * (1.0 - Ls) * u_introColor;   // dark backdrop: the lights glow
 
   // light on the glass
   vec3 V = vec3(0.0, 0.0, 1.0);
@@ -1236,19 +1251,20 @@ void main() {
     float rr = length(ip);
     // shockwave: a fast, bright ring that races through the glass from the point of impact
     float radE = 1.0 - pow(1.0 - ab, 2.2);
-    float ringW = exp(-pow((rr - radE * 2.4) / 0.14, 2.0)) * pow(1.0 - ab, 1.2);
-    col += (vec3(0.85, 0.93, 1.0) * 0.45 + u_dropCol * 0.35) * ringW;
+    float ringW = exp(-pow((rr - radE * 2.4) / 0.24, 2.0)) * pow(1.0 - ab, 1.4);
+    col += (vec3(0.85, 0.93, 1.0) * 0.35 + u_dropCol * 0.30) * ringW;
     // a flash at the moment of impact
     col += u_dropCol * 0.55 * exp(-pow(rr / 0.30, 2.0)) * pow(1.0 - ab, 3.0);
     // ink in water: a ragged, slowly drifting front with swirling density behind it
-    float nz  = fbm(ip * 2.4 + vec2(0.0, u_time * 0.12));
-    float nz2 = fbm(ip * 5.2 - vec2(u_time * 0.18, 0.0) + 3.0);
-    float inkFront = (1.0 - pow(1.0 - ab, 1.8)) * 2.9;
-    float inkEdge = inkFront + (nz - 0.5) * 1.1;
-    float inkM = 1.0 - smoothstep(inkEdge - 0.45, inkEdge, rr);
-    float dens = inkM * (0.50 + 0.95 * nz2);
-    float shell = 0.45 + 0.95 * smoothstep(0.50, 1.0, rc);     // it pools along the glass shell
-    float inkFade = 1.0 - smoothstep(0.60, 1.0, ab);            // and hands over to the steady tint
+    float nz  = fbm(ip * 1.5 + vec2(0.0, u_time * 0.07));
+    float nz2 = fbm(ip * 2.6 - vec2(u_time * 0.10, 0.0) + 3.0);
+    float inkFront = (1.0 - pow(1.0 - ab, 2.2)) * 3.0;
+    float inkEdge = inkFront + (nz - 0.5) * 0.55;                // a gently wavering front instead of ragged tendrils
+    float inkM = 1.0 - smoothstep(inkEdge - 1.15, inkEdge, rr);  // a long, soft fall-off, so there is no hard edge
+    inkM *= inkM * (3.0 - 2.0 * inkM);
+    float dens = inkM * (0.72 + 0.40 * nz2);
+    float shell = 0.55 + 0.80 * smoothstep(0.40, 1.0, rc);     // it pools along the glass shell
+    float inkFade = 1.0 - smoothstep(0.45, 1.0, ab);            // and hands over slowly to the steady tint
     col += u_dropCol * dens * shell * inkFade * 0.95;
   }
   vec3 darkRes = 1.0 - exp(-(base + col) * 1.4);
