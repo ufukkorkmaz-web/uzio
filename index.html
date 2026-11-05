@@ -919,7 +919,9 @@ float sdRB(vec2 p, vec2 b, vec4 r) {
 float sdCap(vec2 q) { return sdRB(q - vec2(0.0, 0.295), vec2(0.409, 0.704), vec4(0.409, 0.27, 0.409, 0.27)); }
 
 // the speaking shape: a horizontal pill, in orb units
-float sdPill(vec2 q) { return sdRB(q, vec2(1.12, 0.50), vec4(0.50)); }
+const float PILL_W = 1.45;   // half the pill's length; the radius of its ends is 0.5
+float sdPill(vec2 q) { return sdRB(q, vec2(PILL_W, 0.50), vec4(0.50)); }
+float pillK() { float sp = clamp(u_speak, 0.0, 1.0); return sp * sp * (3.0 - 2.0 * sp); }   // how far the orb has become the pill
 
 // radial distance to the orb outline (1.0 on the edge), with a soft ripple while speaking.
 float R(vec2 q) {
@@ -938,7 +940,8 @@ float R(vec2 q) {
   float m = clamp(u_mic, 0.0, 1.25);
   if (m < 0.001) return rc0;
   float rm = 1.0 + sdCap(q) / 0.409;                  // 1 on the capsule's edge, 0 along its centre line
-  return mix(rc0, rm / (1.0 + 0.5 * pert), m);        // the outline stretches from the circle into the capsule
+  float pertM = (0.010 + 0.030 * u_level) * lobes;                 // the capsule's edge ripples softly with what it hears
+  return mix(rc0, rm / (1.0 + 0.5 * pert + pertM * clamp(u_mic, 0.0, 1.0)), m);        // the outline stretches from the circle into the capsule
 }
 
 vec3 ramp(float u, float x) {
@@ -983,7 +986,7 @@ vec3 blobs(vec2 s) {
                      0.58 * sin(t * (0.15 + 0.034 * fi) + fi * 2.7 + 1.0));
     roam += 0.12 * vec2(sin(t * 0.43 + fi * 3.1), cos(t * 0.37 + fi * 1.3));
     float hx = -0.72 + 0.24 * fi;
-    vec2 home = vec2(hx, -0.02 + 0.09 * (1.0 - hx * hx) - 0.04 * hx);
+    vec2 home = vec2(hx * mix(1.0, PILL_W / 1.12, pillK()), -0.02 + 0.09 * (1.0 - hx * hx) - 0.04 * hx);
     // each blob sets off a little after the one before it, and travels on a curve rather than a straight line
     float m = 1.0 - smoothstep(0.01 * fi, 0.58 + 0.02 * fi, u_speak);
     vec2 dv = home - roam;
@@ -1004,7 +1007,7 @@ vec3 blobs(vec2 s) {
 // Three physically distinct ribbons. Each band uses its OWN measured frequency
 // energy, wavelength, speed, location and phase; they no longer share one path.
 vec3 band(vec2 s, int layer) {
-  float x = s.x;
+  float x = s.x / mix(1.0, PILL_W / 1.12, pillK());   // the wave grows as long as the pill
   float bass = u_bands.x;
   float mids = u_bands.y;
   float high = u_bands.z;
@@ -1057,6 +1060,13 @@ void main() {
   float a = u_a * u_scale.x;
   float b = u_a * u_scale.y;
   vec2 q = p / vec2(a, b);
+  // listening: the whole microphone sways a little, and more when it hears the voice
+  float mw = clamp(u_mic, 0.0, 1.0);
+  if (mw > 0.001) {
+    float ang = mw * (0.032 * sin(u_time * 1.25) + 0.018 * sin(u_time * 2.1 + 1.0) + u_level * 0.07 * sin(u_time * 4.3));
+    float ca = cos(ang), sa = sin(ang);
+    q = vec2(ca * q.x + sa * q.y, -sa * q.x + ca * q.y);
+  }
 
   // theme wave: a soft-edged circle growing out of the switch; inside it the new theme, outside the old one
   float dd = distance(gl_FragCoord.xy, u_origin) / max(u_maxd, 1.0);
@@ -1068,13 +1078,15 @@ void main() {
   float fw = max(fwidth(r), 1e-4);
   float alpha = 1.0 - smoothstep(1.0 - fw, 1.0 + fw, r);
   float rc = min(r, 1.0);
+  // the pill is only half as tall as the orb, so its edge effects are squeezed into the same thin rim the orb has
+  float rcR = 1.0 - (1.0 - rc) * mix(1.0, 0.45, pillK());
 
   // surface normal of a shallow dome
   float e = 0.012;
   vec2 g = vec2(R(q + vec2(e, 0.0)) - R(q - vec2(e, 0.0)),
                 R(q + vec2(0.0, e)) - R(q - vec2(0.0, e)));
   vec2 gd = g / max(length(g), 1e-5);
-  float edgeAmt = smoothstep(0.35, 1.0, rc);
+  float edgeAmt = smoothstep(mix(0.35, 0.68, pillK()), 1.0, rc);
   vec3 n = normalize(vec3(gd * edgeAmt * 0.95, sqrt(max(1.0 - rc * rc * rc * 0.9, 0.04))));
 
   // lens: magnify toward the middle, no flipped view at the rim (that made a coloured edge)
@@ -1143,7 +1155,7 @@ void main() {
   }
   float Ls = 1.0 - th;
   vec3 through = bgAt((u_center + p * 0.82) / u_res, th);
-  through *= 1.0 - 0.12 * smoothstep(0.55, 1.0, rc);
+  through *= 1.0 - 0.12 * smoothstep(0.55, 1.0, rcR);
   float lowW = sd(0.45, -0.30, q.y);
   // A symmetric, subtle smoky tint on BOTH halves when speaking.
   // Keeping the centre slightly brighter avoids a heavy upper or lower cap.
@@ -1167,19 +1179,19 @@ void main() {
   float s1 = pow(max(dot(n, normalize(L1 + V)), 0.0), 70.0);
   float s2 = pow(max(dot(n, normalize(L2 + V)), 0.0), 38.0);
   float down = sd(0.35, -0.85, gd.y);
-  col += s1 * 0.32 * vec3(0.85, 0.92, 1.0);
-  col += s2 * 0.40 * vec3(0.90, 0.95, 1.0) * (0.5 + 0.5 * down);
+  col += s1 * 0.32 * vec3(0.85, 0.92, 1.0) * (1.0 - 0.55 * pillK());
+  col += s2 * 0.40 * vec3(0.90, 0.95, 1.0) * (0.5 + 0.5 * down) * (1.0 - 0.65 * pillK());
 
   // light from above: a soft window-like reflection high on the glass and a bright inner arc under the
   // top edge. Present at rest, stronger while speaking.
   float lit = 0.62 + 0.38 * u_speak;
   float topMask = sd(0.10, 0.70, q.y) * exp(-pow(q.x / 0.80, 2.0));
-  float ring = exp(-pow((rc - 0.86 - 0.012 * sin(u_time * 1.7)) / 0.04, 2.0));
-  float sheen = exp(-pow((rc - 0.79) / 0.13, 2.0));
+  float ring = exp(-pow((rcR - 0.86 - 0.012 * sin(u_time * 1.7)) / 0.04, 2.0));
+  float sheen = exp(-pow((rcR - 0.79) / 0.13, 2.0));
   float bx = q.x / 0.58;
   float by = (q.y - 0.56 - 0.01 * sin(u_time * 1.25)) / 0.17;
   float soft = exp(-(bx * bx + by * by) * 1.7);
-  float arcs = (ring * 0.30 + sheen * 0.07) * (0.8 + 0.5 * u_level * u_speak);
+  float arcs = (ring * 0.30 + sheen * 0.07) * (0.8 + 0.5 * u_level * u_speak) * (1.0 - 0.70 * pillK());
   col += (arcs + soft * 0.11) * topMask * lit * vec3(0.86, 0.93, 1.0);
   col += hear * lm * u_introColor;   // sound waves arriving
   // the chosen language tints the glass: a little at the rim, more toward the bottom
@@ -1393,12 +1405,12 @@ void main() {
 
   // The Awakening entrance runs on the SAME WebGL orb, not on a separate canvas or video.
   // It only affects render uniforms while active; the existing UI is otherwise unchanged.
-  var INTRO_MS = 4500;
+  var INTRO_MS = 1900;
   var introSkip = document.getElementById("intro-skip");
   var introActive = !reduce;
   var introStartedAt = performance.now();
   // Keep the original 4.5s duration; the final glass reflection finishes before the end.
-  var GLINT_START = 3630, GLINT_DURATION = 710;
+  var GLINT_START = 1e9, GLINT_DURATION = 710;   // no reflection sweep in the entrance any more
   var introWasSkipped = false;
   var introUi = [document.getElementById("theme"), document.getElementById("sound"), document.getElementById("tools"), chatTools, dockEl, micBtn, btn];
   if (introActive) {
@@ -1433,36 +1445,17 @@ void main() {
       return { size: 1, speak: null, energy: 0, ripple: 0, color: 1, ambient: 0 };
     }
     var t = elapsed / INTRO_MS;
-    // Original point-of-light birth and gentle overshoot, retained.
-    var size = t < .21 ? .018 + .11 * easeIntro(t / .21)
-             : t < .60 ? .128 + .93 * easeIntro((t - .21) / .39)
-             : t < .78 ? 1.058 - .058 * easeIntro((t - .60) / .18) : 1;
-
-    // Two delicate glass heartbeats, each with a small pressure swell and
-    // outward ripple. The second is smaller, so the orb naturally settles.
-    var beat1 = Math.exp(-Math.pow((t - .58) / .040, 2));
-    var beat2 = Math.exp(-Math.pow((t - .715) / .045, 2));
-    var heartbeat = beat1 + 0.60 * beat2;
-    size *= 1 + 0.018 * beat1 + 0.011 * beat2;
-
-    // Interior color gradually blooms after glass formation, without
-    // suppressing the neutral glass reflections or background theme.
-    var color = easeIntro((t - .26) / .41);
-
-    // Ambient light reaches the bottom edge in time with the pulses, then
-    // gently fades before handing control to the existing speech glow.
-    var arrive = easeIntro((t - .47) / .16);
-    var depart = 1 - easeIntro((t - .78) / .22);
-    var ambient = (0.38 + 0.22 * beat1 + 0.14 * beat2) * arrive * depart;
+    // A quiet entrance: the orb settles up from a little smaller while its colours fade in. Nothing pulses or sweeps.
+    var size = 0.62 + 0.38 * (1 - Math.pow(1 - Math.min(1, t / 0.75), 3));
+    var color = easeIntro((t - .10) / .60);
 
     // Reveal the real controls in sequence; no duplicated overlay controls.
     var root = document.documentElement;
-    if (t >= .74) root.classList.add("intro-show-chat");
-    if (t >= .81) root.classList.add("intro-show-mic");
-    if (t >= .87) root.classList.add("intro-show-tools");
+    if (t >= .50) root.classList.add("intro-show-chat");
+    if (t >= .58) root.classList.add("intro-show-mic");
+    if (t >= .66) root.classList.add("intro-show-tools");
 
-    return { size: size, speak: .60 * heartbeat, energy: .48 * heartbeat,
-             ripple: .50 * heartbeat, color: color, ambient: ambient };
+    return { size: size, speak: null, energy: 0, ripple: 0, color: color, ambient: 0 };
   }
 
   var W = 1, H = 1, DPR = 1;
@@ -1938,7 +1931,8 @@ void main() {
     r.onresult = function (e) {
       if (r !== rec) return;
       var txt = heard(e.results);
-      msgInput.value = txt;                       // the words appear in the chatbox as they are said
+      msgInput.value = txt;
+      userCaption(txt);                           // and on screen, under the microphone, as they are said
       micPulse = 1;                               // and the orb answers each burst of speech
       if (e.results[e.results.length - 1].isFinal) finalText = txt;
     };
@@ -1952,6 +1946,8 @@ void main() {
       var hard = recErr === "not-allowed" || recErr === "service-not-allowed" || recErr === "audio-capture" || recErr === "network";
       if (spoken && !hard) {
         msgInput.value = spoken;
+        userCaption(spoken);
+        endCaption(false);                        // the words stay for three seconds, then fade
         if (sent) return;                         // never send the same sentence twice
         sent = true;
         if (AUTO_SEND) chatForm.dispatchEvent(new Event("submit", { cancelable: true, bubbles: true }));
@@ -1959,6 +1955,7 @@ void main() {
         return;
       }
       msgInput.value = "";
+      endCaption(true);
       sfx.play(hard ? "error" : "micOff");
       if (recErr === "not-allowed" || recErr === "service-not-allowed") micNote("The microphone is blocked · allow it in the browser’s address bar, then try again");
       else if (recErr === "audio-capture") micNote("No microphone found · check that one is connected");
@@ -1973,6 +1970,7 @@ void main() {
       return;
     }
     setListening(true);
+    endCaption(true);
     msgInput.value = "";
     msgInput.placeholder = "Listening…";
     sfx.play("micOn");
@@ -2138,6 +2136,24 @@ void main() {
     var f = Math.min(1, (now - cap.t0) / cap.dur) * cap.tot, k = 0;
     while (k < cap.cum.length && cap.cum[k] <= f) k++;
     capMark(k);
+  }
+  // what the student is saying, shown live in the same band: the newest words, never more than two lines
+  function userCaption(text) {
+    clearTimeout(captionFadeTimer);
+    cap.mode = "off";
+    var t = String(text || "").replace(/\s+/g, " ").trim();
+    if (!t) return;
+    var LIM = 78;
+    if (t.length > LIM) {
+      var ws = t.split(" "), out = [], len = 0;
+      for (var i = ws.length - 1; i >= 0; i--) {
+        if (out.length && len + 1 + ws[i].length > LIM - 2) break;
+        out.unshift(ws[i]); len += ws[i].length + (out.length > 1 ? 1 : 0);
+      }
+      t = "\u2026 " + out.join(" ");
+    }
+    capEl.textContent = t;
+    capEl.classList.add("on");
   }
   function endCaption(immediate) {
     cap.mode = "off";
@@ -2408,6 +2424,10 @@ void main() {
     var breath = Math.sin(t * 1.25);
     var txs = 1 + pulse + jelly - listenMix * (0.035 - 0.02 * level) + iw * (0.011 * breath + 0.005 * Math.sin(t * 0.8 + 1.2));
     var tys = 1 + pulse - jelly * 0.8 - listenMix * (0.035 - 0.02 * level) + iw * (0.011 * Math.sin(t * 1.25 - 0.35) + 0.005 * Math.sin(t * 1.05 + 2.0));
+    if (listenMix > 0.001) {   // the microphone breathes a little, and jolts softly with each burst of speech
+      txs += listenMix * (0.009 * Math.sin(t * 2.1) + 0.030 * level * Math.sin(t * 7.3));
+      tys += listenMix * (0.009 * Math.sin(t * 1.7 + 1.0) + 0.030 * level * Math.sin(t * 6.1 + 2.0));
+    }
     var k = 110 + 40 * speakMix, c = 15 - 3.5 * speakMix, steps = 2, h = dt / steps;   // only slightly springier while speaking
     for (var i = 0; i < steps; i++) {
       vx += (k * (txs - sx) - c * vx) * h; sx += vx * h;
