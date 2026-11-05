@@ -1174,7 +1174,9 @@ void main() {
   vec3 motes = vec3(0.0);
   float moteK = 0.0;
   vec3 moteC = vec3(0.0);
-  if (u_speak > 0.01) {
+  float lisK = clamp(u_mic, 0.0, 1.0) * u_listen;      // listening: the same glitter rises inside the microphone's glass
+  if (u_speak > 0.01 || lisK > 0.01) {
+    float regionM = exp(-pow((s.y - 0.30) / 0.80, 2.0)) * (1.0 - smoothstep(0.30, 0.42, abs(s.x)));   // the capsule
     vec2 gp = s * vec2(8.0, 6.0) + vec2(0.0, -u_time * 0.35);
     vec2 cell = floor(gp);
     vec2 fc = fract(gp);
@@ -1183,7 +1185,7 @@ void main() {
     float tw = 0.5 + 0.5 * sin(u_time * 2.0 + hash(cell) * 20.0);
     float region = exp(-pow(s.y / 0.55, 2.0)) * (1.0 - smoothstep(0.35, 0.85, abs(s.x)));
     float drive = 0.20 + 0.60 * u_bands.z + 0.30 * u_bands.y;
-    moteK = mote * tw * region * drive * u_speak;
+    moteK = mote * tw * (region * drive * u_speak + regionM * (0.40 + 0.90 * u_level) * lisK * 1.3);
     moteC = ramp(0.10 + 0.70 * hash(cell + 1.0), 0.0);
     motes = (moteC * 0.8 + vec3(0.2)) * moteK;
     // a second, finer layer of glints: they drift up faster, twinkle sharply and carry a little cross of light
@@ -1197,7 +1199,7 @@ void main() {
     float tw2 = pow(0.5 + 0.5 * sin(u_time * 3.4 + hash(c2) * 30.0), 3.0);
     float region2 = exp(-pow(s.y / 0.70, 2.0)) * (1.0 - smoothstep(0.45, 0.95, abs(s.x)));
     float drive2 = 0.25 + 0.70 * u_bands.z + 0.40 * u_bands.y;
-    float spark = (pt + 0.8 * crs) * step(0.60, hash(c2 + 5.9)) * tw2 * region2 * drive2 * u_speak;
+    float spark = (pt + 0.8 * crs) * step(0.60, hash(c2 + 5.9)) * tw2 * (region2 * drive2 * u_speak + regionM * (0.50 + 1.00 * u_level) * lisK * 1.4);
     vec3 sparkC = mix(ramp(0.10 + 0.70 * hash(c2 + 2.0), 0.0), vec3(1.0), 0.45);
     moteK += spark * 0.9;
     motes += sparkC * spark * 1.1;
