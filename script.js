@@ -1,0 +1,1977 @@
+(function () {
+  "use strict";
+
+  var canvas = document.getElementById("orb");
+  var btn = document.getElementById("toggle");
+  var demoBtn = document.getElementById("demo");
+  var audioFileInput = document.getElementById("audio-file");
+  var audioPlayBtn = document.getElementById("audio-play");
+  var stateEl = document.getElementById("state");
+  var themeBtn = document.getElementById("theme");
+  var listenBtn = document.getElementById("listen");
+  var micBtn = document.getElementById("mic");
+  var chatForm = document.getElementById("chat");
+  var msgInput = document.getElementById("msg");
+  var threadEl = document.getElementById("chat-history");
+  var chatEmpty = document.getElementById("chat-empty");
+  var chatTools = document.getElementById("chat-tools");
+  var chatDot = document.getElementById("chat-scroll-dot");
+  function positionChatDot() {
+    if (!chatDot) return;
+    var overflow = threadEl.scrollHeight - threadEl.clientHeight;
+    chatDot.classList.toggle("visible", overflow > 2);
+    if (overflow <= 2) return;
+    var panel = chatDot.parentElement;
+    var top = threadEl.offsetTop + 6;
+    var travel = Math.max(0, threadEl.clientHeight - 18);
+    chatDot.style.top = (top + travel * (threadEl.scrollTop / overflow)) + "px";
+  }
+  threadEl.addEventListener("scroll", positionChatDot, { passive: true });
+  if (window.ResizeObserver) new ResizeObserver(positionChatDot).observe(threadEl);
+  var dragDot = false;
+  chatDot.addEventListener("pointerdown", function(e) {
+    dragDot = true; chatDot.classList.add("dragging");
+    chatDot.setPointerCapture(e.pointerId); e.preventDefault();
+  });
+  chatDot.addEventListener("pointermove", function(e) {
+    if (!dragDot) return;
+    var top = threadEl.getBoundingClientRect().top + 6;
+    var travel = Math.max(1, threadEl.clientHeight - 18);
+    var fraction = Math.max(0, Math.min(1, (e.clientY - top - 6) / travel));
+    threadEl.scrollTop = fraction * (threadEl.scrollHeight - threadEl.clientHeight);
+  });
+  function endDotDrag() { dragDot = false; chatDot.classList.remove("dragging"); }
+  chatDot.addEventListener("pointerup", endDotDrag);
+  chatDot.addEventListener("pointercancel", endDotDrag);
+
+  var capEl = document.getElementById("caption");
+  var CAP_H = 96, CAP_GAP = 8;   // the caption band: two lines of text, then a small gap before the conversation
+  var dockEl = document.getElementById("dock");
+  // where the orb sits, as fractions of the screen (shared by the drawing loop and the thread layout)
+  var ORB_H = 0.30, ORB_W = 0.405, ORB_Y = 0.50;   // diameter vs height, diameter vs width, centre height from the bottom
+  var knob = themeBtn.querySelector(".knob");
+  var gl = canvas.getContext("webgl2", { antialias: false, alpha: false, powerPreference: "high-performance" });
+  if (!gl) { document.getElementById("nogl").hidden = false; return; }
+
+  var VS = `#version 300 es
+in vec2 a;
+void main() { gl_Position = vec4(a, 0.0, 1.0); }`;
+
+  var FS = `#version 300 es
+precision highp float;
+precision highp sampler2D;
+uniform vec2  u_res;
+uniform vec2  u_center;
+uniform float u_a;        // radius of the resting circle in device px
+uniform vec2  u_scale;    // spring-driven stretch (x, y)
+uniform float u_time;
+uniform float u_speak;    // 0 idle .. 1 speaking (eased)
+uniform float u_level;    // 0..1 speech energy
+uniform vec3  u_bands;    // bass, mids, treble (independently measured)
+uniform float u_floorLevel; // separately smoothed ambient glow
+uniform vec3  u_floorBands; // slower frequency response for corner glow
+uniform float u_listen;   // 0 = not listening, 1 = listening (eased)
+uniform float u_mic;      // 0 = orb .. 1 = microphone (springs, so it overshoots a little)
+uniform float u_from;     // theme the wave is leaving (0 light, 1 dark)
+uniform float u_to;       // theme the wave is bringing in
+uniform float u_wave;     // 0..1 progress of the theme wave
+uniform vec2  u_origin;   // where the wave starts (the theme switch), device px
+uniform float u_maxd;     // distance from the origin to the farthest corner
+uniform vec4  u_drop;     // the language droplet: x, y, radius (device px) and strength; strength 0 = none
+uniform vec3  u_dropCol;  // its colour
+uniform vec2  u_impact;   // where it touches the orb
+uniform float u_absorb;   // 0..1 progress of the ripple it sends through the glass; -1 = none
+uniform float u_ripple;   // 0..1 how strongly rings leave the orb (speech energy, eased)
+uniform float u_rphase;   // ring clock: runs faster when the voice is louder
+uniform float u_glint;    // one-shot glass reflection sweep at the end of the intro
+uniform float u_introColor; // 0..1: glass gains the orb palette during its awakening
+uniform vec3  u_tint;       // colour of the chosen language
+uniform float u_tintAmt;    // 0..1 how strongly the orb carries it
+uniform float u_word;       // 0 = orb .. 1 = the word WELCOME! (springs, so it overshoots a little)
+uniform float u_wordHW;     // half the word's width, in orb units
+uniform float u_wob;        // 0..1 how strongly the shape wobbles like jelly while it changes
+uniform sampler2D u_wtex;   // the word as a signed distance field, in texture pixels (positive outside the letters)
+out vec4 o;
+
+const float N = 2.0;        // exponent 2 = true circle at rest, true oval once stretched
+
+const vec3 COCONUT = vec3(0.937, 0.886, 0.784);   // light background, #EFE2C8
+const vec3 WHALE   = vec3(0.043, 0.231, 0.325);   // blue whale
+const vec3 MINT    = vec3(0.773, 0.902, 0.863);   // sea-glass mint
+
+float hash(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
+
+// value noise + fbm: the ragged, drifting edge of the ink that spreads through the glass after impact
+float vn(vec2 p) {
+  vec2 i = floor(p), f = fract(p);
+  f = f * f * (3.0 - 2.0 * f);
+  return mix(mix(hash(i), hash(i + vec2(1.0, 0.0)), f.x),
+             mix(hash(i + vec2(0.0, 1.0)), hash(i + vec2(1.0, 1.0)), f.x), f.y);
+}
+float fbm(vec2 p) { return 0.5 * vn(p) + 0.3 * vn(p * 2.07 + 1.7) + 0.2 * vn(p * 4.1 + 5.3); }
+
+// smoothstep that tolerates reversed edges
+float sd(float a, float b, float x) {
+  return a < b ? smoothstep(a, b, x) : 1.0 - smoothstep(b, a, x);
+}
+
+// the surroundings for a given theme mix th (0 = coconut milk, 1 = blue whale fading to black).
+// Light: coconut milk, with sea-glass mint glowing only around the orb.
+// Dark: black, with the blue whale colour glowing only around the orb.
+vec3 bgAt(vec2 uv, float th) {
+  vec2 bd = vec2((uv.x - 0.5) * u_res.x / u_res.y, uv.y - 1.0);
+  float pool = exp(-1.5 * dot(bd, bd));
+  vec2 pp = uv * u_res - u_center;
+  float dist = length(pp) / max(u_a, 1.0);
+  float g = 1.0 - smoothstep(0.55, 2.9, dist);
+  g = g * g * (0.4 + 0.6 * g);
+  // light: coconut milk with a sea-glass mint glow around the orb; dark: black with the blue whale glow
+  vec3 mintT = mix(MINT, mix(MINT, u_tint, 0.55), u_tintAmt);
+  vec3 whaleT = mix(WHALE, mix(WHALE, u_tint * 0.55, 0.60), u_tintAmt);
+  vec3 lightC = mix(COCONUT * (0.985 + 0.015 * pool), mintT, g * 0.8);
+  vec3 darkC = mix(vec3(0.0, 0.003, 0.006), whaleT, g);
+  return mix(lightC, darkC, th);
+}
+
+// rounded box with a separate radius per corner (r = top-right, bottom-right, top-left, bottom-left)
+float sdRB(vec2 p, vec2 b, vec4 r) {
+  r.xy = (p.x > 0.0) ? r.xy : r.zw;
+  r.x  = (p.y > 0.0) ? r.x  : r.y;
+  vec2 d = abs(p) - b + r.x;
+  return min(max(d.x, d.y), 0.0) + length(max(d, 0.0)) - r.x;
+}
+// the microphone's capsule, in orb units (the whole icon spans -1..1 vertically)
+float sdCap(vec2 q) { return sdRB(q - vec2(0.0, 0.295), vec2(0.409, 0.704), vec4(0.409, 0.27, 0.409, 0.27)); }
+
+// the speaking shape: a horizontal pill, in orb units
+const float PILL_W = 1.45;   // half the pill's length; the radius of its ends is 0.5
+float sdPill(vec2 q) { return sdRB(q, vec2(PILL_W, 0.50), vec4(0.50)); }
+float pillK() { return 0.0; }   // the pill is retired: the orb stays a circle while speaking
+
+// the word as a signed distance, in orb units (negative inside the letters)
+vec2 sdText(vec2 q) {   // x = the crisp letters, y = a softened, rounded copy of them
+  // a faint liquid sway so the letters never sit perfectly still
+  vec2 qq = q + 0.010 * vec2(sin(q.y * 3.0 + u_time * 1.3), sin(q.x * 2.2 - u_time * 1.1));
+  vec2 uv = vec2(qq.x / (2.0 * u_wordHW) + 0.5, 0.5 - qq.y / (2.0 * u_wordHW * 0.1875));
+  vec2 sdq = texture(u_wtex, uv).rg * (2.0 * u_wordHW / 1536.0);
+  return min(sdq, vec2(0.30));
+}
+
+// the scale of the outline's field during the change of shape: the orb (1.0), the bar (0.46) and the letters (0.22)
+float wordScale(float wk) {
+  float e1 = smoothstep(0.0, 1.0, clamp(wk / 0.62, 0.0, 1.0));
+  float e2 = smoothstep(0.0, 1.0, clamp((wk - 0.38) / 0.62, 0.0, 1.0));
+  return mix(mix(1.0, 0.46, e1), 0.22, e2);
+}
+
+// radial distance to the orb outline (1.0 on the edge), with a soft ripple while speaking.
+float R(vec2 q) {
+  vec2 d = max(abs(q), vec2(1e-4));
+  float r = pow(pow(d.x, N) + pow(d.y, N), 1.0 / N);
+  float th = atan(q.y, q.x + 1e-5);
+  // the outline carries three travelling lobes; while speaking they grow with the voice and the third one
+  // runs on the speech clock, so a louder voice sets them moving faster
+  float lobes = 0.6 * sin(3.0 * th + u_time * 2.3) + 0.4 * sin(2.0 * th - u_time * 1.7 + 1.0)
+              + u_speak * 0.25 * sin(5.0 * th - u_rphase * 10.0);
+  float pert = (u_speak * (0.006 + 0.014 * u_level) + (1.0 - u_speak) * 0.004) * lobes;
+  float rc0 = r / (1.0 + pert);
+  // welcome: the outline melts from the circle into the letters
+  float wk = clamp(u_word, 0.0, 1.0);
+  if (wk > 0.001) {
+    // stage 1: the circle stretches sideways into a bar as long as the word (its distance field is blended with the
+    // bar's, so the outline flows rather than pops); stage 2: gaps open in the bar and it settles into the letters
+    float e1 = smoothstep(0.0, 1.0, clamp(wk / 0.62, 0.0, 1.0));
+    float e2 = smoothstep(0.0, 1.0, clamp((wk - 0.38) / 0.62, 0.0, 1.0));
+    // jelly: the whole shape ripples while it changes
+    vec2 qw = q + u_wob * vec2(0.07 * sin(u_time * 17.0 + q.y * 4.5 + q.x * 1.3), 0.06 * sin(u_time * 14.0 + q.x * 2.6));
+    float dO = rc0 - 1.0;
+    float dB = sdRB(qw, vec2(u_wordHW * 0.93, 0.46), vec4(0.46));
+    vec2 dWv = sdText(qw);
+    float dW = mix(dWv.y, dWv.x, smoothstep(0.55, 1.0, e2));   // rounded at first, crisp by the end
+    float dM = mix(mix(dO, dB, e1), dW, e2);
+    float sM = wordScale(wk);
+    rc0 = 1.0 + dM / sM;
+    // inside the glass the distance field has creases along the middle of every stroke, which would show up as seams
+    // in the lighting; a smooth floor flattens them
+    rc0 = 0.5 * (rc0 + 0.5 + sqrt((rc0 - 0.5) * (rc0 - 0.5) + 0.04));
+  }
+  float m = clamp(u_mic, 0.0, 1.25);
+  if (m < 0.001) return rc0;
+  float rm = 1.0 + sdCap(q) / 0.409;                  // 1 on the capsule's edge, 0 along its centre line
+  return mix(rc0, rm / (1.0 + 0.5 * pert), m);        // the outline stretches from the circle into the capsule
+}
+
+vec3 ramp(float u, float x) {
+  vec3 c0 = vec3(1.00, 0.92, 0.76);
+  vec3 c1 = vec3(1.00, 0.50, 0.14);
+  vec3 c2 = vec3(0.98, 0.34, 0.46);
+  vec3 c3 = vec3(0.28, 0.46, 1.00);
+  vec3 c4 = vec3(0.22, 0.80, 0.96);
+  vec3 c5 = vec3(0.52, 0.30, 0.92);
+  vec3 c = c0;
+  c = mix(c, c1, smoothstep(0.00, 0.16, u));
+  c = mix(c, c2, smoothstep(0.14, 0.32, u));
+  c = mix(c, c3, smoothstep(0.30, 0.52, u));
+  c = mix(c, c4, smoothstep(0.50, 0.74, u));
+  c = mix(c, c5, smoothstep(0.72, 1.05, u));
+  c = mix(c, vec3(0.62, 0.35, 0.95), smoothstep(0.25, 1.0, x) * 0.35 * smoothstep(0.3, 0.9, u));
+  return c;
+}
+
+// slow liquid colour for the lower glass, drawn from the same palette as the glow.
+// Speaking lowers the spatial frequency and the speed so it blurs into the soundwave.
+vec3 liquid(vec2 p) {
+  float t = u_time * mix(1.0, 0.7, u_speak);
+  p *= mix(1.0, 0.7, u_speak);
+  vec2 w = p;
+  w += 0.18 * vec2(sin(p.y * 2.3 + t * 0.35), cos(p.x * 2.1 - t * 0.30));
+  w += 0.10 * vec2(sin(w.y * 4.1 - t * 0.50 + 1.3), cos(w.x * 3.7 + t * 0.42));
+  float k  = 0.5 + 0.5 * sin(w.x * 2.2 + w.y * 1.6 + t * 0.25);
+  float k2 = 0.5 + 0.5 * sin(w.x * 1.4 - w.y * 2.3 - t * 0.20 + 2.0);
+  return 0.5 * (ramp(0.15 + 0.70 * k, p.x) + ramp(0.20 + 0.70 * k2, -p.x));
+}
+
+// idle: five soft glowing blobs of the soundwave colours roam freely through the whole orb.
+// Speaking: each one flies back to its place along the wave, flattens out, and the ribbon takes over.
+vec3 blobs(vec2 s) {
+  float t = u_time;
+  float k = 1.0 - u_speak;
+  vec3 acc = vec3(0.0);
+  for (int i = 0; i < 7; i++) {
+    float fi = float(i);
+    vec2 roam = vec2(0.66 * sin(t * (0.17 + 0.040 * fi) + fi * 1.9),
+                     0.58 * sin(t * (0.15 + 0.034 * fi) + fi * 2.7 + 1.0));
+    roam += 0.12 * vec2(sin(t * 0.43 + fi * 3.1), cos(t * 0.37 + fi * 1.3));
+    float hx = -0.72 + 0.24 * fi;
+    vec2 home = vec2(hx * mix(1.0, PILL_W / 1.12, pillK()), -0.02 + 0.09 * (1.0 - hx * hx) - 0.04 * hx);
+    // each blob sets off a little after the one before it, and travels on a curve rather than a straight line
+    float m = 1.0 - smoothstep(0.01 * fi, 0.58 + 0.02 * fi, u_speak);
+    vec2 dv = home - roam;
+    vec2 pos = mix(home, roam, m) + 0.72 * m * (1.0 - m) * 0.30 * vec2(-dv.y, dv.x);
+    vec2 d = s - pos;
+    // they stretch into the flat line only once most of the way home
+    vec2 sc = mix(vec2(0.40, 0.34), vec2(0.27, 0.10), smoothstep(0.30, 0.90, u_speak));
+    sc *= 1.0 + 0.22 * k * sin(t * 0.21 + fi * 2.0);
+    vec2 n2 = d / sc;
+    float g = exp(-dot(n2, n2) * 1.3);
+    float u = 0.12 + 0.13 * fi;                  // orange, pink, blue, cyan, violet
+    vec3 c = ramp(u, hx) * g + vec3(1.0, 0.86, 0.66) * g * g * g * 0.22;
+    acc += c;
+  }
+  return acc * 0.46 *(1.0 + 0.07 * sin(t * 1.25) * k);
+}
+
+// Three physically distinct ribbons. Each band uses its OWN measured frequency
+// energy, wavelength, speed, location and phase; they no longer share one path.
+vec3 band(vec2 s, int layer) {
+  float x = s.x / mix(1.0, PILL_W / 1.12, pillK());   // the wave grows as long as the pill
+  float bass = u_bands.x;
+  float mids = u_bands.y;
+  float high = u_bands.z;
+  float energy = layer == 0 ? bass : (layer == 1 ? mids : high);
+  // all three lines share one centre; they fade to nothing toward both ends and peak in the middle
+  float bell = (1.0 - smoothstep(0.40, 0.82, abs(x))) * (0.35 + 0.65 * exp(-pow(x / 0.38, 2.0)));
+  float env = exp(-pow(x / 0.52, 2.0));
+  float t = u_time;
+  float wave;
+  float y0;
+  float thickness;
+  if (layer == 0) {
+    // Bass: broad, slower, deeper movements, below the centre line.
+    wave = sin(x * 4.5 + t * 2.2 + 0.4) * 0.72
+         + sin(x * 7.0 - t * 1.7 + 1.6) * 0.28;
+    y0 = 0.0;
+    thickness = 0.175;
+  } else if (layer == 1) {
+    // Mids: vocal body and syllables; expressive medium-sized undulations.
+    wave = sin(x * 8.8 - t * 4.3 + 1.3) * 0.68
+         + sin(x * 13.2 + t * 3.4 + 0.7) * 0.32;
+    y0 = 0.0;
+    thickness = 0.126;
+  } else {
+    // Treble: fast, delicate consonant flickers above the centre.
+    wave = sin(x * 16.0 + t * 7.3 + 2.4) * 0.66
+         + sin(x * 23.0 - t * 5.7 + 0.8) * 0.34;
+    y0 = 0.0;
+    thickness = 0.095;
+  }
+  float gain = layer == 0 ? 0.215 : (layer == 1 ? 0.190 : 0.155);   // taller swings
+  float A = u_speak * (0.009 + gain * energy) * env;
+  float yc = y0 * u_speak + 0.055 * (1.0 - x*x) - 0.035*x + A*wave;
+  // Wider, softer ribbons with a gentler centre and a broader surrounding glow.
+  // The lines feel more atmospheric and less sharply drawn.
+  float d = s.y - yc;
+  float w = layer == 0 ? 0.026 : (layer == 1 ? 0.020 : 0.015);
+  float core = exp(-(d * d) / (w * w * 1.35)) * 1.00;
+  float halo = exp(-(d * d) / (w * w * 34.0)) * 0.40;
+  float bloom = exp(-(d * d) / (w * w * 150.0)) * 0.18;
+  vec3 lineCol = layer == 0 ? ramp(0.20, x) : (layer == 1 ? ramp(0.44, x) : ramp(0.64, x));
+  vec3 col = lineCol * (core + halo + bloom) + vec3(1.0, 0.92, 0.85) * core * 0.18;
+  // a wider, softer pool of the line's colour that follows the wave and swells with its energy
+  col += lineCol * exp(-(d * d) / 0.085) * (0.10 + 0.42 * energy);
+  return col * bell * (0.55 + 0.85 * energy * u_speak);
+}
+
+void main() {
+  vec2 p = gl_FragCoord.xy - u_center;
+  float a = u_a * u_scale.x;
+  float b = u_a * u_scale.y;
+  vec2 q = p / vec2(a, b);
+
+  // theme wave: a soft-edged circle growing out of the switch; inside it the new theme, outside the old one
+  float dd = distance(gl_FragCoord.xy, u_origin) / max(u_maxd, 1.0);
+  float front = u_wave * 1.2;
+  float cover = 1.0 - smoothstep(front - 0.07, front, dd);
+  float th = mix(u_from, u_to, cover);
+
+  float r = R(q);
+  float fw = max(fwidth(r), 1e-4);
+  float alpha = 1.0 - smoothstep(1.0 - fw, 1.0 + fw, r);
+  float pxs = 0.5 * (a + b);                       // the orb's radius in device px
+  vec2 dv = gl_FragCoord.xy - u_drop.xy;
+  bool dropOn = u_drop.w > 0.001 && u_drop.z > 0.5;
+  if (dropOn) {
+    // the droplet and the orb are one liquid: where they meet they pull together into a neck
+    float dO = (r - 1.0) * pxs;
+    float dD = length(dv) - u_drop.z;
+    float kk = max(u_drop.z * 0.95, 1.0);
+    float hh = clamp(0.5 + 0.5 * (dD - dO) / kk, 0.0, 1.0);
+    float dU = mix(dD, dO, hh) - kk * hh * (1.0 - hh);
+    alpha = max(alpha, (1.0 - smoothstep(-1.0, 1.0, dU)) * min(1.0, u_drop.w * 1.5));
+  }
+  float rc = min(r, 1.0);
+  // the pill is only half as tall as the orb, so its edge effects are squeezed into the same thin rim the orb has
+  float rcR = 1.0 - (1.0 - rc) * mix(1.0, 0.45, pillK());
+
+  // surface normal of a shallow dome
+  float e = 0.012;
+  vec2 g = vec2(R(q + vec2(e, 0.0)) - R(q - vec2(e, 0.0)),
+                R(q + vec2(0.0, e)) - R(q - vec2(0.0, e)));
+  vec2 gd = g / max(length(g), 1e-5);
+  // for the word, the edge direction fades to nothing where the glass is flat (it flips across the middle of a stroke
+  // and would draw a seam in every light that uses it)
+  float wkG = clamp(u_word, 0.0, 1.0);
+  gd *= mix(1.0, smoothstep(0.30, 0.80, length(g) / 0.024 * wordScale(wkG)), wkG);
+  float edgeAmt = smoothstep(mix(0.35, 0.68, pillK()), 1.0, rc);
+  vec3 n = normalize(vec3(gd * edgeAmt * 0.95, sqrt(max(1.0 - rc * rc * rc * 0.9, 0.04))));
+
+  // lens: magnify toward the middle, no flipped view at the rim (that made a coloured edge)
+  float mag = mix(0.78, 1.0, rc * rc);
+  vec2 s = q * mag;
+  vec2 sw = s;
+  // the blobs do the travelling; the ribbon only takes over once they have lined up
+  float bandW = smoothstep(0.22, 0.82, u_speak);
+  float blobW = 1.0 - smoothstep(0.18, 0.88, u_speak);
+
+  // Independent bass, mid and treble ribbons. Still viewed through glass
+  // with subtle chromatic dispersion, but not phase-shifted copies of one wave.
+  float disp = 0.012 + 0.03 * rc * rc;
+  vec3 bandCol = vec3(0.0);
+  for (int i = 0; i < 3; i++) {
+    float w = bandW * (i == 0 ? 0.79 : (i == 1 ? 0.83 : 0.70));
+    if (w <= 0.0) continue;
+    vec3 c;
+    c.r = band(sw * (1.0 + disp), i).r;
+    c.g = band(sw, i).g;
+    c.b = band(sw * (1.0 - disp), i).b;
+    bandCol += c * w;
+  }
+
+  // speaking: tiny lights drift slowly upward around the lines, livelier with the treble and mids
+  vec3 motes = vec3(0.0);
+  float moteK = 0.0;
+  vec3 moteC = vec3(0.0);
+  float lisK = clamp(u_mic, 0.0, 1.0) * u_listen;      // listening: the same glitter rises inside the microphone's glass
+  if (u_speak > 0.01 || lisK > 0.01) {
+    float regionM = exp(-pow((s.y - 0.30) / 0.80, 2.0)) * (1.0 - smoothstep(0.30, 0.42, abs(s.x)));   // the capsule
+    vec2 gp = s * vec2(8.0, 6.0) + vec2(0.0, -u_time * 0.35);
+    vec2 cell = floor(gp);
+    vec2 fc = fract(gp);
+    vec2 mp = 0.2 + 0.6 * vec2(hash(cell), hash(cell + 7.3));
+    float mote = smoothstep(0.12, 0.0, length(fc - mp)) * step(0.55, hash(cell + 3.1));
+    float tw = 0.5 + 0.5 * sin(u_time * 2.0 + hash(cell) * 20.0);
+    float region = exp(-pow(s.y / 0.55, 2.0)) * (1.0 - smoothstep(0.35, 0.85, abs(s.x)));
+    float drive = 0.20 + 0.60 * u_bands.z + 0.30 * u_bands.y;
+    moteK = mote * tw * (region * drive * u_speak + regionM * (0.40 + 0.90 * u_level) * lisK * 1.3);
+    moteC = ramp(0.10 + 0.70 * hash(cell + 1.0), 0.0);
+    motes = (moteC * 0.8 + vec3(0.2)) * moteK;
+    // a second, finer layer of glints: they drift up faster, twinkle sharply and carry a little cross of light
+    vec2 gp2 = s * vec2(15.0, 11.0) + vec2(0.0, -u_time * 0.6);
+    vec2 c2 = floor(gp2);
+    vec2 f2 = fract(gp2);
+    vec2 mp2 = 0.2 + 0.6 * vec2(hash(c2 + 11.7), hash(c2 + 23.1));
+    vec2 dd2 = f2 - mp2;
+    float pt = smoothstep(0.10, 0.0, length(dd2));
+    float crs = (exp(-abs(dd2.x) * 40.0) * exp(-abs(dd2.y) * 7.0) + exp(-abs(dd2.y) * 40.0) * exp(-abs(dd2.x) * 7.0)) * 0.5;
+    float tw2 = pow(0.5 + 0.5 * sin(u_time * 3.4 + hash(c2) * 30.0), 3.0);
+    float region2 = exp(-pow(s.y / 0.70, 2.0)) * (1.0 - smoothstep(0.45, 0.95, abs(s.x)));
+    float drive2 = 0.25 + 0.70 * u_bands.z + 0.40 * u_bands.y;
+    float spark = (pt + 0.8 * crs) * step(0.60, hash(c2 + 5.9)) * tw2 * (region2 * drive2 * u_speak + regionM * (0.50 + 1.00 * u_level) * lisK * 1.4);
+    vec3 sparkC = mix(ramp(0.10 + 0.70 * hash(c2 + 2.0), 0.0), vec3(1.0), 0.45);
+    moteK += spark * 0.9;
+    motes += sparkC * spark * 1.1;
+  }
+
+  // smoked top; lower half is cool neutral glass with slow liquid colour flowing in it
+  vec3 smoke = mix(vec3(0.008, 0.009, 0.012), vec3(0.040, 0.042, 0.052), sd(0.25, -0.75, q.y));
+  float milk = sd(-0.05, -0.95, q.y) * (0.35 + 0.65 * rc);
+  // idle: colour flows through the whole orb; speaking: it settles into the lower half, softer
+  float lowMask = sd(-0.08, -0.90, q.y);
+  float regionMask = mix(0.70 + 0.30 * lowMask, 0.45 + 0.55 * lowMask, u_speak);
+  float lowAmt = mix(0.15, 0.10, u_speak) * (1.0 + 1.0 * u_level * u_speak);
+  // The glass follows its surroundings: light mode is the bright glass, dark mode the glowing one.
+  // listening: sound waves travel in from the rim toward the centre, and the rim glows with what it hears
+  float lm = u_listen;
+  vec3 hear = vec3(0.0);
+  if (lm > 0.001) {
+    float rr0 = length(q - vec2(0.0, 0.30 * clamp(u_mic, 0.0, 1.0)));
+    for (int i = 0; i < 3; i++) {
+      float ph = fract(u_time * 0.20 + float(i) / 3.0);      // 0 at the rim .. 1 at the centre
+      float rad = mix(0.98, 0.06, ph);
+      float fade = sin(3.14159265 * ph);
+      float ringI = exp(-pow((rr0 - rad) / (0.055 + 0.04 * ph), 2.0)) * fade * fade;
+      vec3 ringC = ramp(0.52 + 0.12 * float(i), 0.0) * 0.75 + vec3(0.225);
+      hear += ringC * ringI;
+    }
+    hear *= 0.26 + 0.45 * u_level;
+    hear += vec3(0.70, 0.85, 1.0) * exp(-pow((rc - 0.93) / 0.05, 2.0)) * (0.06 + 0.18 * u_level);
+  }
+  float Ls = 1.0 - th;
+  vec3 through = bgAt((u_center + p * 0.82) / u_res, th);
+  through *= 1.0 - 0.12 * smoothstep(0.55, 1.0, rcR);
+  float lowW = sd(0.45, -0.30, q.y);
+  // A symmetric, subtle smoky tint on BOTH halves when speaking.
+  // Keeping the centre slightly brighter avoids a heavy upper or lower cap.
+  float idleTint = mix(0.76, 0.94, lowW);
+  float centreGlow = exp(-pow(q.y / 0.55, 2.0));
+  float speakingTint = 0.83 + 0.075 * centreGlow;
+  vec3 base = through * mix(idleTint, speakingTint, u_speak) * vec3(0.97, 0.985, 1.02);
+  base += vec3(0.045, 0.050, 0.060) * milk * (1.0 - Ls);
+  // from here on, col collects the light added to the glass
+  vec3 col = liquid(q) * regionMask * lowAmt * (1.0 - 0.55 * u_speak) * u_introColor;
+
+  float spill = exp(-pow(s.y / 0.45, 2.0)) * exp(-pow(s.x / 0.9, 2.0));
+  col += vec3(0.30, 0.22, 0.35) * spill * (0.07 + 0.10 * u_level * u_speak);
+  col += (bandCol * 0.95 + blobs(sw * mix(1.0, 0.32, clamp(u_word, 0.0, 1.0))) * blobW * (1.0 - 0.85 * clamp(u_word, 0.0, 1.0))) * u_introColor;   // the word stays aqua, so the orb's colours step back
+  col += motes * 1.0 * (1.0 - Ls) * u_introColor;   // dark backdrop: the lights glow
+
+  // light on the glass
+  vec3 V = vec3(0.0, 0.0, 1.0);
+  vec3 L1 = normalize(vec3(-0.45, 0.60, 0.65));
+  vec3 L2 = normalize(vec3(0.35, -0.75, 0.55));
+  float s1 = pow(max(dot(n, normalize(L1 + V)), 0.0), 70.0);
+  float s2 = pow(max(dot(n, normalize(L2 + V)), 0.0), 38.0);
+  float down = sd(0.35, -0.85, gd.y);
+  col += s1 * 0.32 * vec3(0.85, 0.92, 1.0) * (1.0 - 0.55 * pillK());
+  col += s2 * 0.40 * vec3(0.90, 0.95, 1.0) * (0.5 + 0.5 * down) * (1.0 - 0.65 * pillK());
+
+  // light from above: a soft window-like reflection high on the glass and a bright inner arc under the
+  // top edge. Present at rest, stronger while speaking.
+  float lit = 0.62 + 0.38 * u_speak;
+  float topMask = sd(0.10, 0.70, q.y) * exp(-pow(q.x / 0.80, 2.0));
+  float ring = exp(-pow((rcR - 0.86 - 0.012 * sin(u_time * 1.7)) / 0.04, 2.0));
+  float sheen = exp(-pow((rcR - 0.79) / 0.13, 2.0));
+  float bx = q.x / 0.58;
+  float by = (q.y - 0.56 - 0.01 * sin(u_time * 1.25)) / 0.17;
+  float soft = exp(-(bx * bx + by * by) * 1.7);
+  float arcs = (ring * 0.30 + sheen * 0.07) * (0.8 + 0.5 * u_level * u_speak) * (1.0 - 0.70 * pillK());
+  col += (arcs + soft * 0.11) * topMask * lit * vec3(0.86, 0.93, 1.0);
+  // the word: slow liquid colour in the glass, a soft inner rim (brighter on the upper edges) and a fine bright edge
+  if (u_word > 0.001) {
+    float wkk = clamp(u_word, 0.0, 1.0);
+    // inflated aqua glass: pale at the top, deeper blue toward the bottom, a darker blue rim round every letter
+    float vY = clamp(0.5 + q.y / 0.9, 0.0, 1.0);
+    vec3 bodyC = mix(vec3(0.10, 0.66, 1.00), vec3(0.80, 0.97, 1.0), smoothstep(0.1, 0.95, vY));
+    float edgeW = smoothstep(0.55, 0.98, rc);
+    vec3 wc = mix(bodyC * 0.95, vec3(0.02, 0.33, 0.80), edgeW * 0.75);
+    // light from the upper left: a thin bright line just inside the edges that face it, a soft sheen behind it,
+    // and a cool glow pooled along the edges that face away (light bent through the glass)
+    float ndl = dot(gd, normalize(vec2(-0.55, 0.75)));
+    float hiLine = exp(-pow((rc - 0.80) / 0.07, 2.0)) * smoothstep(0.05, 0.75, ndl);
+    float hiSoft = exp(-pow((rc - 0.70) / 0.16, 2.0)) * smoothstep(0.0, 0.9, ndl);
+    float lowGlow = exp(-pow((rc - 0.80) / 0.13, 2.0)) * smoothstep(0.0, 0.8, -ndl);
+    // the edge directions mean nothing where the glass is flat (the middle of a stroke): fade the lighting out there
+    float flatW = smoothstep(0.30, 0.80, length(g) / 0.024 * wordScale(wkk));
+    hiLine *= flatW; hiSoft *= flatW; lowGlow *= flatW;
+    wc += vec3(1.0) * (hiLine * 1.10 + hiSoft * 0.30);
+    wc += vec3(0.55, 0.95, 1.0) * lowGlow * 0.50;
+    wc += vec3(0.90, 0.97, 1.0) * exp(-pow((rc - 0.985) / 0.02, 2.0)) * 0.20;
+    col += wc * 1.15 * wkk * u_introColor;
+  }
+  col += hear * lm * u_introColor;   // sound waves arriving
+  // the chosen language tints the glass: a little at the rim, more toward the bottom
+  col += u_tint * u_tintAmt * (0.05 + 0.10 * rc * rc) * (0.6 + 0.4 * sd(0.8, -0.8, q.y));
+  // A brief diagonal specular reflection catches the curved glass as the intro ends.
+  // The sweep is confined to the orb and gently fades at its silhouette.
+  if (u_glint >= 0.0 && u_glint <= 1.0) {
+    float sweep = mix(-1.55, 1.55, u_glint);
+    float axis = q.x + 0.36 * q.y;
+    float narrow = exp(-pow((axis - sweep) / 0.095, 2.0));
+    float softEdge = exp(-pow((axis - sweep) / 0.25, 2.0));
+    float vertical = smoothstep(-0.75, 0.18, q.y) * (1.0 - smoothstep(0.80, 1.08, q.y));
+    float rimFade = 1.0 - smoothstep(0.82, 1.0, rc);
+    float envelope = sin(3.14159265 * u_glint);
+    float highlight = (narrow * 0.23 + softEdge * 0.075) * vertical * rimFade * envelope;
+    col += vec3(0.82, 0.92, 1.0) * highlight;
+  }
+  // dark surroundings: the colour glows, adding light to the glass.
+  // light surroundings: the colour sits in the glass like ink, so it stays visible on a bright backdrop.
+  if (dropOn) {
+    // inside the glass the droplet is a soft glow of its colour that dissolves into the orb
+    float inside = 1.0 - smoothstep(1.0, 1.05, r);
+    col += u_dropCol * exp(-dot(dv, dv) / (u_drop.z * u_drop.z * 1.7)) * 0.55 * u_drop.w * inside;
+  }
+  if (u_absorb >= 0.0) {
+    float ab = u_absorb;
+    vec2 ip = (gl_FragCoord.xy - u_impact) / pxs;
+    float rr = length(ip);
+    // shockwave: a fast, bright ring that races through the glass from the point of impact
+    float radE = 1.0 - pow(1.0 - ab, 2.2);
+    float ringW = exp(-pow((rr - radE * 2.4) / 0.24, 2.0)) * pow(1.0 - ab, 1.4);
+    col += (vec3(0.85, 0.93, 1.0) * 0.35 + u_dropCol * 0.30) * ringW;
+    // a flash at the moment of impact
+    col += u_dropCol * 0.55 * exp(-pow(rr / 0.30, 2.0)) * pow(1.0 - ab, 3.0);
+    // ink in water: a ragged, slowly drifting front with swirling density behind it
+    float nz  = fbm(ip * 1.5 + vec2(0.0, u_time * 0.07));
+    float nz2 = fbm(ip * 2.6 - vec2(u_time * 0.10, 0.0) + 3.0);
+    float inkFront = (1.0 - pow(1.0 - ab, 2.2)) * 3.0;
+    float inkEdge = inkFront + (nz - 0.5) * 0.55;                // a gently wavering front instead of ragged tendrils
+    float inkM = 1.0 - smoothstep(inkEdge - 1.15, inkEdge, rr);  // a long, soft fall-off, so there is no hard edge
+    inkM *= inkM * (3.0 - 2.0 * inkM);
+    float dens = inkM * (0.72 + 0.40 * nz2);
+    float shell = 0.55 + 0.80 * smoothstep(0.40, 1.0, rc);     // it pools along the glass shell
+    float inkFade = 1.0 - smoothstep(0.45, 1.0, ab);            // and hands over slowly to the steady tint
+    col += u_dropCol * dens * shell * inkFade * 0.95;
+  }
+  vec3 darkRes = 1.0 - exp(-(base + col) * 1.4);
+  float em = max(col.r, max(col.g, col.b));
+  vec3 hue = col / max(em, 1e-4);
+  float inkA = 1.0 - exp(-em * 1.6);
+  vec3 lightRes = mix(base, hue * 0.94, inkA * 0.92);
+  col = mix(darkRes, lightRes, Ls);
+  // light backdrop: the lights are drawn as small, soft drops of colour, so they show on the bright glass without being harsh
+  col = mix(col, mix(vec3(1.0), moteC, 0.8) * 0.88, clamp(moteK * 1.2, 0.0, 0.42) * Ls);
+
+  // outside the glass: the surroundings, with the orb's shadow falling on them
+  vec2 uv = gl_FragCoord.xy / u_res;
+  vec3 bg = bgAt(uv, th);
+  float rs = length(q + vec2(0.0, 0.18));
+  float wide = 1.0 - smoothstep(0.9, 2.6, rs);
+  float tight = 1.0 - smoothstep(0.95, 1.45, rs);
+  float sh = 1.0 - (1.0 - wide * 0.55) * (1.0 - tight * 0.35);
+  bg *= vec3(1.0 - sh * 0.30, 1.0 - sh * 0.30, 1.0 - sh * 0.28);
+
+  // Ambient speech illumination wraps the ENTIRE perimeter, not just the corners.
+  // Long falloff and a slow colour drift keep it atmospheric rather than flashing.
+  float drift = 0.018 * sin(u_time * 0.20);
+  float bottomEdge = exp(-pow(uv.y / 0.23, 2.0));
+  float topEdge = exp(-pow((1.0 - uv.y) / 0.21, 2.0));
+  float leftEdge = exp(-pow(uv.x / 0.19, 2.0));
+  float rightEdge = exp(-pow((1.0 - uv.x) / 0.19, 2.0));
+
+  // Use the same continuous six-stop colour ramp as the actual soundwave:
+  // champagne / amber -> coral -> pink -> blue -> cyan -> violet.
+  // Different paths around the screen keep every colour visible at once.
+  // Gather the orb's full palette beneath the central message field rather
+  // than distributing its most colorful tones across the far corners.
+  // The flowing color pockets remain subtle and drift slowly with speech.
+  float centerX = clamp((uv.x - 0.18) / 0.64, 0.0, 1.0);
+  float bottomPhase = clamp(0.02 + 0.96 * centerX + drift
+      + 0.055 * sin(centerX * 18.85 - u_time * 0.16)
+      + 0.028 * sin(centerX * 37.70 + u_time * 0.11), 0.0, 1.0);
+  vec3 bottomMain = ramp(bottomPhase, centerX - 0.5);
+  vec3 bottomAccent = ramp(clamp(bottomPhase + 0.15 * sin(centerX * 12.57 + 1.4), 0.0, 1.0), centerX - 0.5);
+  vec3 bottomColour = mix(bottomMain, bottomAccent, 0.30);
+  vec3 topColour = ramp(clamp(0.93 - 0.84 * uv.x - drift, 0.0, 1.0), 0.5 - uv.x);
+  vec3 leftColour = ramp(clamp(0.23 + 0.53 * uv.y + drift, 0.0, 1.0), -0.25);
+  vec3 rightColour = ramp(clamp(0.76 - 0.55 * uv.y - drift, 0.0, 1.0), 0.25);
+
+  // Weighted averaging prevents extra-bright corner intersections.
+  // A broad, feathered pool peaks directly below "Type a message".
+  // The lower side edges retain a faint ambient wash, while 30% remains
+  // the maximum bottom-edge opacity (the other edges remain at 15%).
+  float centerPool = exp(-pow((uv.x - 0.50) / 0.30, 2.0));
+  float bottomW = bottomEdge * 0.91 * (0.30 + 0.70 * centerPool);
+  float topW = topEdge * 0.54;
+  float leftW = leftEdge * 0.66;
+  float rightW = rightEdge * 0.66;
+  float sumW = bottomW + topW + leftW + rightW;
+  vec3 edgeColour = (bottomColour * bottomW + topColour * topW
+                   + leftColour * leftW + rightColour * rightW) / max(sumW, 0.0001);
+  float coverage = 1.0 - exp(-sumW * 1.15);
+
+  // Bass, mids and treble subtly shape the glow without tracking every syllable.
+  float voiceColourEnergy = dot(u_floorBands, vec3(0.30, 0.40, 0.30));
+  // Bottom edge glows at 30%; top, left and right stay at 15%.
+   // Blend the targets by edge weight so corners remain smooth, not over-bright.
+   float edgeOpacity = (bottomW * 0.30 + topW * 0.15
+                      + leftW * 0.15 + rightW * 0.15) / max(sumW, 0.0001);
+   float strength = u_floorLevel * (0.80 + 0.20 * voiceColourEnergy) * coverage * 0.76 * edgeOpacity;
+  vec3 darkEdge = bg + edgeColour * strength * 0.80;
+  // Translucent colour on the light theme; bright additive bloom on the dark theme.
+  vec3 lightTint = mix(bg, edgeColour * 0.78 + vec3(0.30), 0.60);
+  vec3 lightEdge = mix(bg, lightTint, clamp(strength * 0.42, 0.0, 0.32));
+  bg = mix(lightEdge, darkEdge, th);
+
+  // ripples: soft rings leave the orb while it speaks, widening and fading as they go. They follow the orb's own
+  // outline, are fainter below it (where the caption and conversation live) and never draw over the glass.
+  if (u_ripple > 0.004) {
+    float dq = length(q);   // rings leave the orb's own outline
+    float rip = 0.0;
+    for (int i = 0; i < 3; i++) {
+      float rph = fract(u_rphase + float(i) / 3.0);
+      float rad = 1.10 + rph * 1.35;
+      float wid = 0.045 + 0.11 * rph;
+      float amp = pow(1.0 - rph, 2.0) * smoothstep(0.0, 0.10, rph);
+      rip += exp(-pow((dq - rad) / wid, 2.0)) * amp;
+    }
+    rip *= u_ripple * mix(0.35, 1.0, smoothstep(-0.9, 0.2, q.y)) * smoothstep(1.0, 1.08, dq);
+    vec3 darkRip = bg + vec3(0.40, 0.72, 1.0) * rip * 0.085;
+    vec3 lightRip = mix(bg, vec3(0.42, 0.66, 0.70), clamp(rip * 0.12, 0.0, 1.0));
+    bg = mix(lightRip, darkRip, th);
+  }
+  if (dropOn) {
+    float outsideO = smoothstep(1.0, 1.04, r);
+    vec2 l = dv / u_drop.z;
+    float ll = min(length(l), 1.0);
+    vec2 hl = l - vec2(-0.30, 0.42);
+    vec3 dropShade = u_dropCol * (0.92 - 0.38 * smoothstep(0.5, 1.0, ll))
+                   + vec3(0.92, 0.96, 1.0) * 0.50 * exp(-dot(hl, hl) * 12.0);
+    col = mix(col, dropShade, outsideO * min(1.0, u_drop.w * 2.0));
+  }
+  vec3 outc = col * alpha + bg * (1.0 - alpha);
+
+  // ---- listening: the glass has become a microphone; its bracket and stand grow in around it ----
+  float mm = clamp(u_mic, 0.0, 1.0);
+  if (mm > 0.002) {
+    float appear = smoothstep(0.40, 0.95, mm);
+    // purple glass and the three pairs of grille bars
+    float inCap = alpha * smoothstep(0.30, 0.95, mm);
+    float vg = smoothstep(0.95, -0.40, q.y);
+    outc = mix(outc, outc * vec3(0.92, 0.84, 1.05) + vec3(0.07, 0.03, 0.14) * (0.35 + 0.65 * vg), 0.50 * (1.0 - 0.75 * u_tintAmt) * inCap);
+    outc = mix(outc, mix(u_tint * 0.88, outc + u_tint * 0.30, th), 0.26 * u_tintAmt * inCap);
+    float bars = 0.0;
+    for (int i = 0; i < 3; i++) {
+      float yc = 0.477 - 0.272 * float(i);
+      vec2 bp = vec2(abs(q.x) - 0.2725, q.y - yc);
+      float bd = sdRB(bp, vec2(0.1365, 0.068), vec4(0.0, 0.0, 0.068, 0.068));
+      bars = max(bars, 1.0 - smoothstep(-0.004, 0.004, bd));
+    }
+    outc *= 1.0 - 0.09 * bars * inCap;
+    outc += vec3(0.85, 0.92, 1.0) * 0.035 * bars * inCap * th;
+    // bracket, tabs, neck and base (flat colour, like the icon), drawn behind the glass
+    vec2 aq = vec2(q.x, q.y + (1.0 - appear) * 0.22);
+    vec2 ab = vec2(abs(aq.x), aq.y);
+    float dU;
+    if (aq.y < 0.0) dU = abs(length(aq) - 0.5) - 0.0909;
+    else { vec2 sp = vec2(ab.x - 0.5, aq.y); float hh = clamp(sp.y / 0.227, 0.0, 1.0); dU = length(sp - vec2(0.0, 0.227 * hh)) - 0.0909; }
+    float dTab = sdRB(vec2(ab.x - 0.6, aq.y - 0.068), vec2(0.15, 0.068), vec4(0.068));
+    float dBr = min(dU, dTab);
+    float dNeck = sdRB(aq - vec2(0.0, -0.66), vec2(0.136, 0.16), vec4(0.0));
+    float dBase = sdRB(aq - vec2(0.0, -0.909), vec2(0.364, 0.091), vec4(0.091));
+    float aa = max(fwidth(aq.y), 1e-4) * 1.2;
+    float aBr = 1.0 - smoothstep(-aa, aa, dBr);
+    float aSt = 1.0 - smoothstep(-aa, aa, min(dNeck, dBase));
+    // the same glass as the orb: see-through, lit from above, a fine bright edge, the orb's blue-to-violet in it
+    float dA = (aSt > aBr) ? min(dNeck, dBase) : dBr;
+    float depth = max(-dA, 0.0);
+    float aAll = max(aBr, aSt);
+    float rimG = exp(-pow(depth / 0.014, 2.0));
+    float lowLit = 0.55 + 0.45 * smoothstep(0.25, -0.85, aq.y);
+    float inner = exp(-pow(depth / 0.07, 2.0));
+    float tv = smoothstep(0.35, -1.0, aq.y);
+    vec3 gT = mix(vec3(0.34, 0.56, 1.00), vec3(0.62, 0.46, 0.98), tv);
+    gT = mix(gT, vec3(0.30, 0.78, 0.96), 0.35 * exp(-pow((aq.y + 0.30) / 0.35, 2.0)));
+    // the chosen language colours the glass: blue for English, amber for Deutsch, pink for Français
+    gT = mix(gT, mix(u_tint * 1.05, u_tint * 0.85 + vec3(0.08), tv), 0.92 * u_tintAmt);
+    float fillA = (0.20 + 0.16 * inner) * (1.0 + 0.9 * u_tintAmt);
+    // dark surroundings: the colour glows; light surroundings: it sits in the glass like ink
+    vec3 gDark = bg + gT * fillA * 0.62 + vec3(0.80, 0.90, 1.0) * rimG * 0.42 * lowLit;
+    vec3 gLight = mix(bg, gT * 0.80, fillA * 1.55) + vec3(1.0) * rimG * 0.30 * lowLit;
+    vec3 glassC = mix(gLight, gDark, th);
+    // a soft window reflection along the top of the bracket's arms
+    float topRef = exp(-pow((aq.y - 0.20) / 0.10, 2.0)) * inner * step(0.0, aq.y);
+    glassC += vec3(0.85, 0.93, 1.0) * topRef * 0.12;
+    outc = mix(outc, glassC, aAll * appear * (1.0 - alpha));
+    // the same light falling on the cap's own edge where it meets the bracket
+    outc += vec3(0.5, 0.65, 1.0) * exp(-pow(max(sdCap(aq), 0.0) / 0.03, 2.0)) * 0.05 * appear * aAll * (1.0 - alpha) * (1.0 - th * 0.0);
+  }
+
+  // the leading edge of the wave: a thin glowing ring (warm going to light, cool going to dark)
+  float rg = exp(-pow((dd - front + 0.04) / 0.035, 2.0)) * sin(3.14159265 * clamp(u_wave, 0.0, 1.0));
+  vec3 ringCol = mix(vec3(1.0, 0.74, 0.38), vec3(0.45, 0.82, 1.0), u_to);
+  outc = mix(outc, ringCol, clamp(rg * 0.5, 0.0, 1.0));
+
+  outc += (hash(gl_FragCoord.xy + fract(u_time)) - 0.5) * (1.5 / 255.0);
+  o = vec4(outc, 1.0);
+}`;
+
+  function compile(type, src) {
+    var sh = gl.createShader(type);
+    gl.shaderSource(sh, src);
+    gl.compileShader(sh);
+    if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) {
+      console.error(gl.getShaderInfoLog(sh));
+      return null;
+    }
+    return sh;
+  }
+  var vs = compile(gl.VERTEX_SHADER, VS), fs = compile(gl.FRAGMENT_SHADER, FS);
+  var prog = gl.createProgram();
+  if (!vs || !fs) { document.getElementById("nogl").hidden = false; return; }
+  gl.attachShader(prog, vs);
+  gl.attachShader(prog, fs);
+  gl.linkProgram(prog);
+  if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
+    console.error(gl.getProgramInfoLog(prog));
+    document.getElementById("nogl").hidden = false;
+    return;
+  }
+  gl.useProgram(prog);
+
+  var buf = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
+  var loc = gl.getAttribLocation(prog, "a");
+  gl.enableVertexAttribArray(loc);
+  gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
+
+  var U = {};
+  ["u_res", "u_center", "u_a", "u_scale", "u_time", "u_speak", "u_level", "u_bands",
+   "u_floorLevel", "u_floorBands", "u_glint", "u_introColor", "u_tint", "u_tintAmt", "u_listen", "u_mic", "u_from", "u_to", "u_wave", "u_origin", "u_maxd", "u_ripple", "u_rphase", "u_drop", "u_dropCol", "u_impact", "u_absorb", "u_word", "u_wordHW", "u_wtex", "u_wob"].forEach(function (n) {
+    U[n] = gl.getUniformLocation(prog, n);
+  });
+
+  var reduce = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  // The Awakening entrance runs on the SAME WebGL orb, not on a separate canvas or video.
+  // It only affects render uniforms while active; the existing UI is otherwise unchanged.
+  var INTRO_MS = 1900;
+  var introSkip = document.getElementById("intro-skip");
+  var introActive = !reduce;
+  var introStartedAt = performance.now();
+  // Keep the original 4.5s duration; the final glass reflection finishes before the end.
+  var GLINT_START = 1e9, GLINT_DURATION = 710;   // no reflection sweep in the entrance any more
+  var introWasSkipped = false;
+  var introUi = [document.getElementById("theme"), document.getElementById("sound"), document.getElementById("tools"), chatTools, dockEl, micBtn, btn];
+  if (introActive) {
+    document.documentElement.classList.add("intro-active");
+    introSkip.hidden = false;
+    introUi.forEach(function (el) { if (el) el.inert = true; });
+  }
+  function finishIntro() {
+    if (!introActive) return;
+    introActive = false;
+    introSkip.hidden = true;
+    canvas.style.pointerEvents = "";
+    document.documentElement.classList.remove("intro-active", "intro-show-chat", "intro-show-mic", "intro-show-tools");
+    introUi.forEach(function (el) { if (el) el.inert = false; });
+    // Do not change any ordinary speaking, listening or theme state.
+  }
+  introSkip.addEventListener("click", function () { introWasSkipped = true; finishIntro(); });
+  canvas.style.pointerEvents = introActive ? "none" : "";
+  // Escape provides a keyboard path to skip alongside the visible button.
+  window.addEventListener("keydown", function (e) {
+    if (introActive && e.key === "Escape") { introWasSkipped = true; finishIntro(); }
+  });
+  function easeIntro(x) {
+    x = Math.max(0, Math.min(1, x));
+    return x * x * (3 - 2 * x);
+  }
+  function introVisual(now) {
+    if (!introActive) return { size: 1, speak: null, energy: 0, ripple: 0, color: 1, ambient: 0 };
+    var elapsed = Math.max(0, now - introStartedAt);
+    if (elapsed >= INTRO_MS) {
+      finishIntro();
+      return { size: 1, speak: null, energy: 0, ripple: 0, color: 1, ambient: 0 };
+    }
+    var t = elapsed / INTRO_MS;
+    // A quiet entrance: the orb settles up from a little smaller while its colours fade in. Nothing pulses or sweeps.
+    var size = 0.62 + 0.38 * (1 - Math.pow(1 - Math.min(1, t / 0.75), 3));
+    var color = easeIntro((t - .10) / .60);
+
+    // Reveal the real controls in sequence; no duplicated overlay controls.
+    var root = document.documentElement;
+    if (t >= .50) root.classList.add("intro-show-chat");
+    if (t >= .58) root.classList.add("intro-show-mic");
+    if (t >= .66) root.classList.add("intro-show-tools");
+
+    return { size: size, speak: null, energy: 0, ripple: 0, color: color, ambient: 0 };
+  }
+
+  var W = 1, H = 1, DPR = 1;
+
+  function resize() {
+    DPR = Math.min(window.devicePixelRatio || 1, 2);
+    var r = canvas.getBoundingClientRect();
+    W = Math.max(1, Math.floor(r.width * DPR));
+    H = Math.max(1, Math.floor(r.height * DPR));
+    if (canvas.width !== W || canvas.height !== H) { canvas.width = W; canvas.height = H; }
+    gl.viewport(0, 0, W, H);
+    layoutThread();
+  }
+  // the thread starts below the orb's glow and ends just above the chatbox
+  function layoutThread() {
+    if (!dockEl) return;
+    var cr = canvas.getBoundingClientRect();
+    var orbR = Math.min(cr.height * ORB_H, cr.width * ORB_W) / 2;
+    var capTop = cr.height * (1 - ORB_Y) + orbR * 1.18;   // under the orb, clear of its widest wobble
+    capEl.style.top = capTop + "px";
+    capEl.style.height = CAP_H + "px";
+    // The one-line / two-line speech display is the only dialogue UI.
+  }
+  window.addEventListener("resize", resize);
+  resize();
+
+  // ---- theme: coconut milk (light) <-> blue whale to black (dark) ----
+  // The wave itself is painted by the shader; here we run its clock, and flip the page's text and
+  // button colours at the moment the wave reaches the controls.
+  var root = document.documentElement;
+  var themeNow = 1;                 // theme currently shown or arriving (0 light, 1 dark). Dark is the default.
+  var fromT = 1, toT = 1, wave = 1, waveStart = 0, waving = false;
+  var uiPending = false, uiDd = 0;
+  var origin = [0, 0], maxd = 1;
+  var waveDur = reduce ? 250 : 1500;
+
+  function applyUi(t) {
+    var dark = t === 1, st = root.style;
+    st.setProperty("--bg", dark ? "#02090e" : "#EFE2C8");
+    st.setProperty("--fg", dark ? "#ecebf2" : "#1d1c22");
+    st.setProperty("--fg-dim", dark ? "#8d9aa6" : "#77747f");
+    st.setProperty("--line", dark ? "rgba(255,255,255,0.16)" : "rgba(0,0,0,0.14)");
+    st.setProperty("--fill", dark ? "rgba(255,255,255,0.07)" : "rgba(0,0,0,0.045)");
+    st.setProperty("--fill-hover", dark ? "rgba(255,255,255,0.12)" : "rgba(0,0,0,0.085)");
+    st.setProperty("--accent", dark ? "#7fd0ff" : "#c9742a");
+    st.setProperty("--flag-w", dark ? "rgba(255,255,255,0.12)" : "rgba(255,255,255,0.60)");
+    st.setProperty("--flag-k", dark ? "rgba(16,16,18,0.42)" : "rgba(60,60,66,0.20)");
+    st.setProperty("color-scheme", dark ? "dark" : "light");
+  }
+
+  function setTheme(next, instant) {
+    next = next ? 1 : 0;
+    if (waving && !instant) return;           // let the wave finish
+    if (next === themeNow && !instant) return;
+    themeNow = next;
+    themeBtn.setAttribute("aria-checked", next ? "true" : "false");
+    themeBtn.setAttribute("aria-label", next ? "Switch to light mode" : "Switch to dark mode");
+    if (instant) {
+      fromT = toT = next; wave = 1; waving = false; uiPending = false;
+      applyUi(next);
+      return;
+    }
+    // the button: knob stretches in the direction it travels, a ring pops out
+    knob.style.transformOrigin = next ? "left center" : "right center";
+    themeBtn.classList.remove("pop");
+    void themeBtn.offsetWidth;
+    themeBtn.classList.add("pop");
+    setTimeout(function () { themeBtn.classList.remove("pop"); }, 1000);
+
+    // the screen: the wave starts at the switch and runs to the farthest corner
+    var cr = canvas.getBoundingClientRect();
+    var r = themeBtn.getBoundingClientRect();
+    var ox = (r.left + r.width / 2 - cr.left) * DPR;
+    var oy = H - (r.top + r.height / 2 - cr.top) * DPR;
+    origin = [ox, oy];
+    maxd = Math.max(Math.hypot(ox, oy), Math.hypot(W - ox, oy), Math.hypot(ox, H - oy), Math.hypot(W - ox, H - oy));
+    var tr = dockEl.getBoundingClientRect();
+    var tx = (tr.left + tr.width / 2 - cr.left) * DPR;
+    var ty = H - (tr.top + tr.height / 2 - cr.top) * DPR;
+    uiDd = Math.hypot(tx - ox, ty - oy) / maxd;   // normalised, same units as the shader's dd
+    fromT = toT;
+    toT = next;
+    wave = 0;
+    waveStart = performance.now();
+    waving = true;
+    uiPending = true;
+  }
+  themeBtn.addEventListener("click", function () { setTheme(!themeNow); });
+  applyUi(1);
+
+  // ---- speaking state -------------------------------------------------
+  var speaking = false;                         // what the app wants once listening is over
+  var listening = false, listenProg = 0, listenMix = 0, micMix = 0, micVel = 0;
+  var speakMix = 0, level = 0, prog = 0;
+  var sx = 1, vx = 0, sy = 1, vy = 0;
+  var bandsSmooth = [0, 0, 0];
+  var floorLevel = 0, floorBands = [0, 0, 0];
+  var rippleE = 0, rphase = 0, levelSlow = 0;   // ripple strength (slowly follows the voice) and its ring clock
+  var externalLevel = null;   // set by a real audio source later
+
+  function smooth(a, b, x) {
+    x = Math.min(1, Math.max(0, (x - a) / (b - a)));
+    return x * x * (3 - 2 * x);
+  }
+  // stand-in for speech energy: syllable rhythm with short pauses between phrases
+  function speechTarget(t) {
+    var phrase = smooth(-0.9, -0.55, Math.sin(t * 1.35 + 0.8 * Math.sin(t * 0.4)));
+    var syl = 0.5 + 0.5 * Math.sin(t * 23.9 + 2.0 * Math.sin(t * 1.7));
+    var syl2 = 0.5 + 0.5 * Math.sin(t * 38.0 + 1.0);
+    return phrase * (0.22 + 0.55 * syl + 0.23 * syl2);
+  }
+
+  // A built-in Web Speech demo. Browsers do not expose speechSynthesis audio
+  // to Web Audio, so word-boundary timing drives a speech-like energy envelope.
+  // Real audio sources can still supply measured amplitude with orb.setLevel().
+  var sampleText = "Hello there! Watch how the colours dance as I speak. Every word has its own rhythm, and every pause lets the glass settle.";
+  var canSpeak = ("speechSynthesis" in window) && ("SpeechSynthesisUtterance" in window);
+  var demoActive = false, demoStarted = false, demoToken = 0;
+  var boundarySeen = false, boundaryAt = 0, lastWordSize = 5, lastWordEnd = 0;
+  if (!canSpeak) {
+    demoBtn.disabled = true;
+    demoBtn.textContent = "Speech demo unavailable";
+  }
+
+  // Web Audio analyser: measures the ACTUAL samples of a user-selected audio file.
+  // Unlike speechSynthesis, this signal is available to the Web Audio API.
+  var AudioContextClass = window.AudioContext || window.webkitAudioContext;
+  var audioContext = null, analyser = null, samples = null, spectrum = null;
+  var frequencyBands = [0, 0, 0];
+  var audio = new Audio();
+  audio.preload = "auto";
+  var audioUrl = null, audioActive = false;
+
+  function initAudioGraph() {
+    if (!AudioContextClass) throw new Error("Web Audio is not supported by this browser");
+    if (audioContext) return;
+    audioContext = new AudioContextClass();
+    var source = audioContext.createMediaElementSource(audio);
+    analyser = audioContext.createAnalyser();
+    analyser.fftSize = 2048;
+    analyser.smoothingTimeConstant = 0.35;
+    samples = new Float32Array(analyser.fftSize);
+    spectrum = new Uint8Array(analyser.frequencyBinCount);
+    source.connect(analyser);
+    analyser.connect(audioContext.destination); // the sound remains audible
+  }
+
+  function stopAudio() {
+    if (!audioActive) return;
+    audioActive = false;
+    audio.pause();
+    audio.currentTime = 0;
+    audioPlayBtn.textContent = "Play real audio";
+    externalLevel = null;
+    frequencyBands = [0, 0, 0];
+    setSpeaking(false, true);
+  }
+
+  audioFileInput.addEventListener("change", function () {
+    stopAudio();
+    if (audioUrl) URL.revokeObjectURL(audioUrl);
+    var file = audioFileInput.files && audioFileInput.files[0];
+    audioUrl = file ? URL.createObjectURL(file) : null;
+    audio.src = audioUrl || "";
+    audioPlayBtn.disabled = !audioUrl || !AudioContextClass;
+    stateEl.textContent = audioUrl ? "Recording ready · play real audio" : "Idle · tap the orb or press Space";
+  });
+
+  audioPlayBtn.addEventListener("click", async function () {
+    if (audioActive) { stopAudio(); return; }
+    if (!audioUrl) return;
+    if (demoActive) stopDemo();
+    if (listening) setListening(false);
+    try {
+      initAudioGraph();
+      await audioContext.resume();
+      audio.currentTime = 0;
+      externalLevel = 0;
+      await audio.play();
+      audioActive = true;
+      audioPlayBtn.textContent = "Stop real audio";
+      endCaption();
+      setSpeaking(true, true);
+      stateEl.textContent = "Speaking · live audio analysis";
+    } catch (err) {
+      externalLevel = null;
+      stateEl.textContent = "Could not play audio: " + err.message;
+    }
+  });
+
+  audio.addEventListener("ended", stopAudio);
+  audio.addEventListener("error", function () {
+    stopAudio();
+    stateEl.textContent = "Could not decode this audio file";
+  });
+
+  function readAudioEnergy() {
+    if (!audioActive || !analyser) return 0;
+    analyser.getFloatTimeDomainData(samples);
+    analyser.getByteFrequencyData(spectrum);
+    var sum = 0;
+    for (var i = 0; i < samples.length; i++) sum += samples[i] * samples[i];
+    var rms = Math.sqrt(sum / samples.length);
+    // Frequency ranges are approximate bands tailored for speech (not musical EQ).
+    // Exclude very low rumble and suppress ambient/spectral noise.
+    var hzPerBin = audioContext.sampleRate / analyser.fftSize;
+    function energyBetween(lo, hi, scale) {
+      var a = Math.max(1, Math.floor(lo / hzPerBin));
+      var b = Math.min(spectrum.length, Math.ceil(hi / hzPerBin));
+      var total = 0, count = 0;
+      for (var j = a; j < b; j++) {
+        var v = spectrum[j] / 255;
+        total += v * v;
+        count++;
+      }
+      var power = Math.sqrt(total / Math.max(1, count));
+      return Math.min(1, Math.max(0, (power - 0.055) * scale));
+    }
+    frequencyBands[0] = energyBetween(85, 300, 3.4);     // bass: fundamental/voicing
+    frequencyBands[1] = energyBetween(300, 1800, 3.8);   // mids: vowels/voice body
+    frequencyBands[2] = energyBetween(1800, 6500, 5.0);  // treble: clarity/consonants
+    // Silence gate prevents background hiss from animating the ribbons.
+    var gate = Math.min(1, Math.max(0, (rms - 0.004) * 110));
+    for (var k = 0; k < 3; k++) frequencyBands[k] *= gate;
+    return Math.min(1, Math.max(0, (rms - 0.008) * 5.8));
+  }
+
+  function stopDemo() {
+    if (!demoActive) return;
+    demoToken++;
+    demoActive = false;
+    demoStarted = false;
+    demoBtn.textContent = "Play sample speech";
+    externalLevel = null;
+    if (canSpeak) window.speechSynthesis.cancel();
+    setSpeaking(false, true);
+  }
+
+  // Listening draws the orb in and sends waves inward. It takes over from speaking or idle; when it ends the orb
+  // returns to whichever of the two is wanted at that moment (speaking if speak(true) is on, else idle).
+  function setListening(on) {
+    on = !!on;
+    if (on === listening) return;
+    if (on) {
+      if (demoActive) stopDemo();
+      if (audioActive) stopAudio();
+    }
+    listening = on;
+    if (on) endWelcome();
+    if (!on && recActive && rec) {   // listening was cut short (for example by a reply starting): drop the recognition too
+      var rr = rec; recActive = false; rec = null;
+      msgInput.placeholder = PLACEHOLDER;
+      try { rr.abort(); } catch (err) {}
+    }
+    if (on) endCaption(true);
+    listenBtn.textContent = on ? "Stop listening" : "Listen";
+    listenBtn.setAttribute("aria-pressed", on ? "true" : "false");
+    micBtn.setAttribute("aria-pressed", on ? "true" : "false");
+    canvas.setAttribute("aria-pressed", on ? "true" : "false");
+    // a little squeeze as the glass draws in (and a release when it lets go)
+    vy += on ? -0.5 : 0.6;
+    vx += on ? -0.5 : 0.6;
+    stateEl.textContent = on ? "Listening" : (speaking ? "Speaking" : "Idle · tap the orb or press Space");
+  }
+
+  function setSpeaking(on, fromDemo) {
+    if (on && listening && !fromDemo) setListening(false);   // the reply starts: listening gives way to speaking
+    if (!fromDemo && demoActive) stopDemo();
+    if (!fromDemo && audioActive) stopAudio();
+    speaking = !!on;
+    if (speaking) endWelcome();
+    if (!speaking) endCaption();
+    btn.textContent = speaking ? "Stop" : "Speak";
+    btn.setAttribute("aria-pressed", speaking ? "true" : "false");
+    stateEl.textContent = listening ? "Listening" : (speaking ? (demoActive ? "Speaking · voice demo" : "Speaking") : "Idle · tap the orb or press Space");
+  }
+
+  function playDemo() {
+    if (!canSpeak) return;
+    if (demoActive) { stopDemo(); return; }
+    if (audioActive) stopAudio();
+    if (listening) setListening(false);
+    demoToken++;
+    var token = demoToken;
+    demoActive = true;
+    demoStarted = false;
+    boundarySeen = false;
+    lastWordSize = 5;
+    lastWordEnd = 0;
+    externalLevel = null;
+    demoBtn.textContent = "Stop sample speech";
+    stateEl.textContent = "Preparing speech…";
+
+    // A fresh utterance for each playback avoids browser re-use issues.
+    var utterance = new SpeechSynthesisUtterance(sampleText);
+    utterance.lang = "en-US";
+    utterance.rate = 0.94;
+    utterance.pitch = 1.0;
+    utterance.volume = 1.0;
+    utterance.onstart = function () {
+      if (token !== demoToken) return;
+      demoStarted = true;
+      boundaryAt = performance.now();
+      setSpeaking(true, true);
+      startCaption(sampleText, Math.round(sampleText.length * 72));
+    };
+    utterance.onboundary = function (e) {
+      if (token !== demoToken || !demoStarted || e.name === "sentence") return;
+      boundarySeen = true;
+      capSync(e.charIndex);
+      boundaryAt = performance.now();
+      var remaining = sampleText.slice(e.charIndex);
+      var match = remaining.match(/^[\p{L}']+/u);
+      lastWordSize = match ? match[0].length : 3;
+      lastWordEnd = e.charIndex + (match ? match[0].length : 1);
+    };
+    function finish() {
+      if (token !== demoToken) return;
+      demoActive = false;
+      demoStarted = false;
+      demoBtn.textContent = "Play sample speech";
+      externalLevel = null;
+      setSpeaking(false, true);
+    }
+    utterance.onend = finish;
+    utterance.onerror = function (e) {
+      finish();
+      if (e.error && e.error !== "canceled" && e.error !== "interrupted") {
+        stateEl.textContent = "Speech playback failed · try again";
+      }
+    };
+    window.speechSynthesis.cancel();
+    window.speechSynthesis.speak(utterance);
+  }
+
+  function demoEnergy(now, t) {
+    if (!demoStarted) return 0;
+    if (!boundarySeen) {
+      // Some Safari / mobile voices never send word events. Use a rhythmic
+      // fallback rather than leaving the speaking orb motionless.
+      return 0.17 + 0.65 * speechTarget(t);
+    }
+    var age = Math.max(0, (now - boundaryAt) / 1000);
+    // Phrases with longer words have more syllabic activity. The energy drops
+    // between word events and during natural punctuation pauses.
+    var duration = Math.min(0.45, 0.12 + 0.048 * lastWordSize);
+    var envelope = Math.exp(-Math.pow(age / duration, 3.0));
+    var syllables = 0.70 + 0.30 * Math.sin(age * 22.0 + lastWordSize * 0.8);
+    return Math.min(1, (0.19 + 0.73 * envelope) * syllables * envelope);
+  }
+
+  demoBtn.addEventListener("click", playDemo);
+  btn.addEventListener("click", function () { setSpeaking(!speaking); });
+  listenBtn.addEventListener("click", function () { setListening(!listening); });
+  // ---- soft sounds: tiny glass-like chimes made with Web Audio (no audio files). The speaker button mutes them. ----
+  var soundBtn = document.getElementById("sound");
+  // phones play their own start and stop tones for voice input, and an extra chime can clash with the microphone
+  var COARSE = !!(window.matchMedia && window.matchMedia("(pointer: coarse)").matches);
+  var sfx = (function () {
+    var ctx = null, master = null, on = true;
+    try { on = localStorage.getItem("uzio-sound") !== "off"; } catch (e) {}
+    function ensure() {
+      if (!on) return null;
+      if (!ctx) {
+        var AC = window.AudioContext || window.webkitAudioContext;
+        if (!AC) return null;
+        ctx = new AC();
+        master = ctx.createGain();
+        master.gain.value = 0.5;               // overall softness
+        master.connect(ctx.destination);
+      }
+      if (ctx.state === "suspended") ctx.resume();
+      return ctx;
+    }
+    // one note: a sine with a quiet octave above it, a quick attack and a long soft fade
+    function tone(freq, at, dur, vol) {
+      var c = ensure();
+      if (!c) return;
+      var t = c.currentTime + at;
+      [[freq, vol], [freq * 2, vol * 0.22]].forEach(function (p) {
+        var o = c.createOscillator(), g = c.createGain();
+        o.type = "sine";
+        o.frequency.value = p[0];
+        g.gain.setValueAtTime(0.0001, t);
+        g.gain.exponentialRampToValueAtTime(p[1], t + 0.012);
+        g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+        o.connect(g); g.connect(master);
+        o.start(t); o.stop(t + dur + 0.05);
+      });
+    }
+    // [frequency, start (s), length (s), volume]
+    var S = {
+      pill:  [[659, 0, 0.50, 0.070], [988, 0.07, 0.60, 0.055]],      // language chosen: a bright two-note chime
+      send:  [[440, 0, 0.18, 0.050], [660, 0.05, 0.24, 0.045]],      // message sent: a quick upward blip
+      reply: [[587, 0, 0.40, 0.050], [880, 0.10, 0.55, 0.040]],      // tutor answers: a gentle low-to-high note
+      micOn: [[523, 0, 0.20, 0.050], [784, 0.07, 0.30, 0.050]],      // listening starts: rising
+      micOff:[[784, 0, 0.20, 0.040], [523, 0.07, 0.30, 0.040]],      // listening ends: falling
+      error: [[330, 0, 0.25, 0.050], [262, 0.08, 0.32, 0.050]]       // something went wrong: soft and low
+    };
+    function play(name) {
+      if (!on || !S[name]) return;
+      if (COARSE && (name === "micOn" || name === "micOff")) return;
+      S[name].forEach(function (n) { tone(n[0], n[1], n[2], n[3]); });
+    }
+    function sync() {
+      soundBtn.setAttribute("aria-pressed", on ? "true" : "false");
+      soundBtn.setAttribute("aria-label", on ? "Mute sounds" : "Turn sounds on");
+      soundBtn.title = on ? "Sounds on" : "Sounds off";
+    }
+    function toggle() {
+      on = !on;
+      try { localStorage.setItem("uzio-sound", on ? "on" : "off"); } catch (e) {}
+      sync();
+      if (on) play("pill");
+    }
+    sync();
+    return { play: play, toggle: toggle };
+  })();
+  soundBtn.addEventListener("click", sfx.toggle);
+
+  // ---- voice input: the mic button listens through the browser's speech recognition ----
+  // It fills the chatbox as the student speaks and, when they stop, sends the sentence like a typed message
+  // (so the "orb:submit" event fires the same way). Works in Chrome & Edge; Safari is partial; Firefox has none.
+  var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  var REC_LANG = { en: "en-US", de: "de-DE", fr: "fr-FR" };   // follows the language pill; English until one is chosen
+  var AUTO_SEND = true;                                        // false = only fill the chatbox and let the student press Enter
+  var INTERIM = true;                                          // show words live while speaking; set false to fill the chatbox only at the end
+  var PLACEHOLDER = "";
+  var rec = null, recActive = false, micPulse = 0;
+  if (!SR) micBtn.title = "Voice input isn’t supported in this browser";
+
+  function micNote(text) {
+    stateEl.textContent = text;
+    setTimeout(function () {
+      if (stateEl.textContent === text && !listening && !speaking) stateEl.textContent = "Idle · tap the orb or press Space";
+    }, 4500);
+  }
+
+  // Reads the recognizer's result list into one clean sentence. Computers return a single growing result, but many
+  // phones (Android Chrome especially) return every partial result as its own entry, each already containing the
+  // words before it. Simply joining them repeats the words ("hello hello how hello how are"), so each entry is
+  // compared with what is already collected: a longer version replaces it, a repeat is skipped, and only a
+  // genuinely new stretch of speech is appended.
+  function heard(results) {
+    var out = "", base = "";
+    for (var i = 0; i < results.length; i++) {
+      var t = (results[i][0].transcript || "").replace(/\s+/g, " ").trim();
+      if (i > 0 && !results[i - 1].isFinal) out = base;   // a live guess is always replaced by the next one
+      base = out;
+      if (!t) continue;
+      if (!out) { out = t; continue; }
+      var a = out.toLowerCase(), b = t.toLowerCase();
+      if (b.indexOf(a) === 0) out = t;                                     // the same sentence, now longer
+      else if (a.indexOf(b) !== -1) continue;                              // a repeat of something already heard
+      else if (a.split(" ")[0] === b.split(" ")[0]) out = t;               // the recogniser revised its guess
+      else out += " " + t;                                                 // a new stretch of speech
+    }
+    return out;
+  }
+
+  function startVoice() {
+    if (!SR) {
+      sfx.play("error");
+      micNote("Voice input isn’t supported in this browser · try Chrome or Edge, or type instead");
+      return;
+    }
+    var r;
+    try { r = new SR(); } catch (e) { sfx.play("error"); micNote("Couldn’t start voice input · try again"); return; }
+    var finalText = "", recErr = "", sent = false;
+    r.lang = REC_LANG[currentLang] || "en-US";
+    r.interimResults = INTERIM;
+    r.continuous = false;
+    r.maxAlternatives = 1;
+    r.onspeechstart = function () { if (r === rec) micPulse = 1; };
+    r.onresult = function (e) {
+      if (r !== rec) return;
+      var txt = heard(e.results);
+      msgInput.value = txt;
+      userCaption(txt);                           // and on screen, under the microphone, as they are said
+      micPulse = 1;                               // and the orb answers each burst of speech
+      if (e.results[e.results.length - 1].isFinal) finalText = txt;
+    };
+    r.onerror = function (e) { if (r === rec) recErr = e.error || "error"; };
+    r.onend = function () {
+      if (r !== rec) return;
+      recActive = false; rec = null;
+      msgInput.placeholder = PLACEHOLDER;
+      if (listening) setListening(false);
+      var spoken = (finalText || msgInput.value).trim();
+      var hard = recErr === "not-allowed" || recErr === "service-not-allowed" || recErr === "audio-capture" || recErr === "network";
+      if (spoken && !hard) {
+        msgInput.value = spoken;
+        userCaption(spoken);
+        endCaption(false);                        // the words stay for three seconds, then fade
+        if (sent) return;                         // never send the same sentence twice
+        sent = true;
+        if (AUTO_SEND) chatForm.dispatchEvent(new Event("submit", { cancelable: true, bubbles: true }));
+        else { sfx.play("micOff"); }
+        return;
+      }
+      msgInput.value = "";
+      endCaption(true);
+      sfx.play(hard ? "error" : "micOff");
+      if (recErr === "not-allowed" || recErr === "service-not-allowed") micNote("The microphone is blocked · allow it in the browser’s address bar, then try again");
+      else if (recErr === "audio-capture") micNote("No microphone found · check that one is connected");
+      else if (recErr === "network") micNote("Voice input needs an internet connection");
+      else if (recErr !== "aborted") micNote("I didn’t catch that · tap the mic and try again");
+    };
+    rec = r; recActive = true;
+    try { r.start(); } catch (e) {
+      recActive = false; rec = null;
+      sfx.play("error");
+      micNote("Couldn’t start the microphone · try again");
+      return;
+    }
+    setListening(true);
+    endCaption(true);
+    msgInput.value = "";
+    msgInput.placeholder = "Listening…";
+    sfx.play("micOn");
+  }
+
+  function toggleMic() {
+    if (recActive && rec) {                       // tap again to finish: what was said so far is still used
+      var r = rec;
+      try { r.stop(); } catch (e) {}
+      setTimeout(function () { if (rec === r) { try { r.abort(); } catch (e) {} } }, 2500);
+      return;
+    }
+    if (listening) { setListening(false); sfx.play("micOff"); return; }
+    startVoice();
+  }
+  micBtn.addEventListener("click", toggleMic);
+
+  // The central WebGL orb is a second, always-available microphone control.
+  // Test the actual circular hit area, not the full-screen canvas background.
+  // Its target is unchanged when a selected language tint merges into the orb.
+  function orbWasTapped(clientX, clientY) {
+    var bounds = canvas.getBoundingClientRect();
+    var diameter = Math.min(bounds.height * ORB_H, bounds.width * ORB_W);
+    var cx = bounds.left + bounds.width * 0.5;
+    var cy = bounds.top + bounds.height * (1 - ORB_Y);
+    var radius = diameter * 0.5 * 1.10;
+    return Math.hypot(clientX - cx, clientY - cy) <= radius;
+  }
+  function startConversationFromOrb() {
+    if (introActive || flightBusy) return;
+    endWelcome();
+    if (!recActive && !listening) {
+      // Never resume a previous test/demo utterance when the microphone ends.
+      clearTimeout(replyTimer);
+      if (speaking) setSpeaking(false);
+    }
+    toggleMic();
+  }
+  canvas.addEventListener("click", function (e) {
+    if (orbWasTapped(e.clientX, e.clientY)) startConversationFromOrb();
+  });
+  canvas.addEventListener("keydown", function (e) {
+    if (e.code === "Enter" || e.code === "Space") {
+      e.preventDefault();
+      e.stopPropagation();
+      startConversationFromOrb();
+    }
+  });
+  canvas.addEventListener("pointermove", function (e) {
+    canvas.style.cursor = orbWasTapped(e.clientX, e.clientY) ? "pointer" : "default";
+  });
+  canvas.addEventListener("pointerleave", function () { canvas.style.cursor = "default"; });
+
+
+  chatTools.addEventListener("toggle", function () {
+    if (chatTools.open) threadEl.scrollTop = threadEl.scrollHeight;
+    requestAnimationFrame(positionChatDot);
+  });
+
+  // ---- the conversation ----
+  var TUTOR_PLACEHOLDER = "This is where the tutor\u2019s reply will appear once a model is connected.";
+  var replyTimer = 0;
+  function addMessage(role, text) {
+    if (chatEmpty) { chatEmpty.remove(); chatEmpty = null; }
+    var el = document.createElement("div");
+    el.className = "msg " + (role === "user" ? "user" : "tutor");
+    el.textContent = text;
+    threadEl.appendChild(el);
+    while (threadEl.children.length > 200) threadEl.removeChild(threadEl.firstChild);
+    threadEl.scrollTop = threadEl.scrollHeight;
+    requestAnimationFrame(positionChatDot);
+    return el;
+  }
+  // ---- the live caption ----
+  // Words are grouped into short pages (about two lines) so the caption never grows past its band. Which word is being
+  // said comes from the voice when it reports word positions, and from an estimate of the pace otherwise.
+  var captionFadeTimer = 0;
+  var cap = { words: [], starts: [], pages: [], cum: [], tot: 1, page: -1, idx: -2, spans: {}, mode: "off", t0: 0, dur: 1 };
+  function capBuild(text) {
+    var re = /\S+/g, m, i, LIM = 80;
+    cap.words = []; cap.starts = []; cap.cum = []; cap.pages = [];
+    while ((m = re.exec(text))) { cap.words.push(m[0]); cap.starts.push(m.index); }
+    var tot = 0;
+    for (i = 0; i < cap.words.length; i++) {
+      var w = cap.words[i];
+      tot += w.length + 2 + (/[.!?]$/.test(w) ? 6 : (/[,;:]$/.test(w) ? 3 : 0));
+      cap.cum.push(tot);
+    }
+    cap.tot = Math.max(1, tot);
+    // 1. cut the text into sentences (a sentence ends at . ! ? or …)
+    var sents = [], cur = [];
+    for (i = 0; i < cap.words.length; i++) {
+      cur.push(i);
+      if (/[.!?\u2026]["\u201d\u2019)]*$/.test(cap.words[i])) { sents.push(cur); cur = []; }
+    }
+    if (cur.length) sents.push(cur);
+    function size(ix) { var n = 0; ix.forEach(function (k, q) { n += cap.words[k].length + (q ? 1 : 0); }); return n; }
+    // 2. a sentence too long for one page is split into equal parts, preferably after a comma, never leaving a stray word
+    var chunks = [];
+    sents.forEach(function (sn) {
+      var L = size(sn);
+      if (L <= LIM) { chunks.push(sn); return; }
+      var parts = Math.ceil(L / LIM), target = L / parts, part = [], len = 0, left = parts;
+      sn.forEach(function (k, q) {
+        part.push(k); len += cap.words[k].length + (part.length > 1 ? 1 : 0);
+        var rest = sn.length - q - 1;
+        var soft = /[,;:\u2013\u2014]$/.test(cap.words[k]);
+        if (left > 1 && rest >= 2 && (len >= target * 1.1 || (soft && len >= target * 0.7))) {
+          chunks.push(part); part = []; len = 0; left--;
+        }
+      });
+      if (part.length) chunks.push(part);
+    });
+    // 3. whole sentences share a page when they fit together; otherwise a new sentence starts a new page
+    var page = [], plen = 0;
+    chunks.forEach(function (ch) {
+      var L = size(ch);
+      if (page.length && plen + 1 + L > LIM) { cap.pages.push(page); page = []; plen = 0; }
+      page = page.concat(ch); plen += (plen ? 1 : 0) + L;
+    });
+    if (page.length) cap.pages.push(page);
+  }
+  function capShowPage(p) {
+    cap.page = p;
+    cap.spans = {};
+    capEl.textContent = "";
+    cap.pages[p].forEach(function (wi, n) {
+      if (n) capEl.appendChild(document.createTextNode(" "));
+      var sp = document.createElement("span");
+      sp.className = "w";
+      sp.textContent = cap.words[wi];
+      capEl.appendChild(sp);
+      cap.spans[wi] = sp;
+    });
+  }
+  function capMark(k) {                       // k = the word being said; k = words.length means all are done
+    if (k === cap.idx || !cap.words.length) return;
+    cap.idx = k;
+    if (k < cap.words.length) {
+      for (var p = 0; p < cap.pages.length; p++) {
+        if (cap.pages[p].indexOf(k) > -1) { if (p !== cap.page) capShowPage(p); break; }
+      }
+    }
+    for (var wi in cap.spans) cap.spans[wi].className = "w" + (+wi < k ? " done" : (+wi === k ? " on" : ""));
+  }
+  function startCaption(text, durationMs) {
+    clearTimeout(captionFadeTimer);
+    capEl.classList.remove("on");
+    capBuild(text);
+    cap.page = -1; cap.idx = -2; cap.mode = "sim";
+    cap.t0 = performance.now(); cap.dur = Math.max(600, durationMs);
+    capEl.classList.add("on");
+    capMark(0);
+  }
+  function capSync(charIndex) {               // the voice has told us where it is
+    if (cap.mode === "off") return;
+    cap.mode = "voice";
+    var k = 0;
+    for (var i = 0; i < cap.starts.length; i++) { if (cap.starts[i] <= charIndex) k = i; else break; }
+    capMark(k);
+  }
+  function capTick(now) {                     // estimated pace, when nothing better is available
+    if (cap.mode !== "sim") return;
+    var f = Math.min(1, (now - cap.t0) / cap.dur) * cap.tot, k = 0;
+    while (k < cap.cum.length && cap.cum[k] <= f) k++;
+    capMark(k);
+  }
+  // what the student is saying, shown live in the same band: the newest words, never more than two lines
+  function userCaption(text) {
+    clearTimeout(captionFadeTimer);
+    cap.mode = "off";
+    var t = String(text || "").replace(/\s+/g, " ").trim();
+    if (!t) return;
+    var LIM = 78;
+    if (t.length > LIM) {
+      var ws = t.split(" "), out = [], len = 0;
+      for (var i = ws.length - 1; i >= 0; i--) {
+        if (out.length && len + 1 + ws[i].length > LIM - 2) break;
+        out.unshift(ws[i]); len += ws[i].length + (out.length > 1 ? 1 : 0);
+      }
+      t = "\u2026 " + out.join(" ");
+    }
+    capEl.textContent = t;
+    capEl.classList.add("on");
+  }
+  function endCaption(immediate) {
+    cap.mode = "off";
+    clearTimeout(captionFadeTimer);
+    if (immediate) { capEl.classList.remove("on"); return; }
+    // Hold the final words for three seconds after speech has finished, then fade them away.
+    captionFadeTimer = setTimeout(function () { capEl.classList.remove("on"); }, 3000);
+  }
+
+  // a reply from the tutor: shown in the thread and in the caption, and the orb speaks for roughly as long as it takes to say
+  function reply(text) {
+    addMessage("tutor", text);
+    sfx.play("reply");
+    var ms = Math.min(14000, 1500 + text.length * 50);
+    setSpeaking(true);
+    startCaption(text, ms - 900);
+    clearTimeout(replyTimer);
+    replyTimer = setTimeout(function () {
+      if (speaking && !demoActive && !audioActive) setSpeaking(false);
+    }, ms);
+  }
+
+  // ---- the first question: three pills to choose the language ----
+  var LANGS = {
+    en: { label: "English",  reply: "Great, let\u2019s practise English! Tell me about yourself and we\u2019ll start there." },
+    de: { label: "Deutsch",  reply: "Sehr gut, \u00fcben wir Deutsch! Erz\u00e4hl mir ein wenig von dir, dann fangen wir an." },
+    fr: { label: "Fran\u00e7ais", reply: "Tr\u00e8s bien, pratiquons le fran\u00e7ais ! Parle-moi un peu de toi, et nous commen\u00e7ons." }
+  };
+  var currentLang = null;
+  // the orb reacts to a language choice: the glass squeezes in, springs back with a bounce, and a reflection sweeps across it.
+  // hard = the sphere has just crashed into it: a much heavier squash and a sharper rebound.
+  var orbGlintAt = -1e9;
+  function orbReact(hard) {
+    if (reduce) return;
+    var s = hard ? -1.7 : -0.7;
+    vx += s; vy += s;                                                                        // squash
+    setTimeout(function () { vx += hard ? 2.0 : 1.1; vy += hard ? 2.0 : 1.1; }, hard ? 90 : 120);   // rebound
+    orbGlintAt = performance.now();
+  }
+  // the orb takes on the colour of the chosen language (its glass and the glow around it)
+  var TINTS = { en: [0.28, 0.46, 1.0], de: [1.0, 0.66, 0.22], fr: [0.92, 0.40, 0.66] };
+  var tintCol = [0, 0, 0], tintTarget = [0, 0, 0], tintAmt = 0, tintGoal = 0;
+  function setTint(code) {
+    var c = TINTS[code];
+    if (!c) return;
+    if (tintAmt < 0.02 || reduce) tintCol = c.slice();
+    tintTarget = c;
+    tintGoal = 1;
+    if (reduce) tintAmt = 1;
+  }
+  // The chosen sphere winds back, charges at the orb stretched along its path and crashes into it. The impact squashes the
+  // glass, sends a shockwave through it, and the sphere's colour bleeds out across the shell like ink in water before
+  // settling into the steady tint. The merging itself is drawn by the shader.
+  var flightBusy = false;
+  var dropAnim = null;
+  var DROP_COL = { en: [0.36, 0.56, 1.0], de: [1.0, 0.72, 0.26], fr: [0.96, 0.44, 0.70] };
+  function flyToOrb(ball, code) {
+    function arrive() { flightBusy = false; }
+    if (reduce || !ball.animate) { orbReact(); setTint(code); sfx.play("pill"); arrive(); return; }
+    flightBusy = true;
+    var r = ball.getBoundingClientRect();
+    var cr = canvas.getBoundingClientRect();
+    var orbRc = Math.min(cr.height * ORB_H, cr.width * ORB_W) / 2;
+    var cxC = cr.left + cr.width / 2, cyC = cr.top + cr.height * (1 - ORB_Y);
+    var r0 = Math.max(18, r.width * 0.42);                    // radius of the drop, css px
+    var sx0 = r.left + r.width / 2, sy0 = r.top + r.height / 2;
+    // each sphere flies along its own straight line toward the orb's centre, so English comes in from the lower left,
+    // Deutsch from below and Français from the lower right, and each one strikes the edge that faces it
+    var vxd = cxC - sx0, vyd = cyC - sy0, vl = Math.hypot(vxd, vyd) || 1;
+    var ux = vxd / vl, uy = vyd / vl;
+    var tx = cxC - ux * (orbRc + r0 * 0.7), ty = cyC - uy * (orbRc + r0 * 0.7);   // just outside the orb, on that line
+    var dx = tx - sx0, dy = ty - sy0;
+    var se = r0 / (r.width / 2);
+    var ang = Math.atan2(dy, dx) * 180 / Math.PI;             // the direction of travel
+    var wx = -Math.cos(ang * Math.PI / 180) * 16, wy = -Math.sin(ang * Math.PI / 180) * 16;   // wind-up: away from the orb
+    var fly = ball.cloneNode(true);
+    fly.classList.add("flying");
+    fly.style.left = r.left + "px"; fly.style.top = r.top + "px";
+    fly.style.width = r.width + "px"; fly.style.height = r.height + "px";
+    document.body.appendChild(fly);
+    function tr(x, y, a, b, rot) { return "translate(" + x + "px," + y + "px) rotate(" + rot + "deg) scale(" + a + "," + b + ")"; }
+    var anim = fly.animate([
+      { transform: tr(0, 0, 1, 1, ang), offset: 0, easing: "ease-out" },
+      { transform: tr(wx, wy, 1.12, 0.86, ang), offset: 0.30, easing: "cubic-bezier(.75,0,1,.55)" },            // pulls back
+      { transform: tr(dx * 0.80, dy * 0.80, se * 1.25, se * 0.78, ang), offset: 0.90 },                         // charges, stretched
+      { transform: tr(dx, dy, se * 1.05, se * 0.95, ang), offset: 1 }
+    ], { duration: 520, fill: "forwards" });
+    anim.finished.catch(function () {});
+    setTimeout(function () {
+      if (fly.parentNode) fly.parentNode.removeChild(fly);
+      dropAnim = { t0: performance.now(), cx: cxC, cy: cyC, tx: tx, ty: ty, ux: ux, uy: uy, r0: r0, orbR: orbRc, code: code, reacted: false, tinted: false, done: arrive };
+    }, 520);
+  }
+  function easeIn3(x) { x = Math.max(0, Math.min(1, x)); return x * x * x; }
+
+  function chooseLanguage(code, row, ball) {
+    if (flightBusy) return;
+    endWelcome();
+    var L = LANGS[code];
+    currentLang = code;
+    row.classList.add("chosen");
+    Array.prototype.forEach.call(row.children, function (b) {
+      var on = b.getAttribute("data-lang") === code;
+      b.setAttribute("aria-pressed", on ? "true" : "false");
+      b.classList.toggle("sel", on);
+    });
+    addMessage("user", L.label);
+    window.dispatchEvent(new CustomEvent("orb:language", { detail: { language: code, label: L.label } }));
+    flyToOrb(ball, code);
+    clearTimeout(replyTimer);
+    replyTimer = setTimeout(function () { reply(L.reply); }, reduce ? 700 : 1700);   // the reply starts once the ink has mostly spread
+  }
+  function addGreeting() {
+    var row = document.createElement("div");
+    row.className = "lang-spheres";
+    row.setAttribute("role", "group");
+    row.setAttribute("aria-label", "Language");
+    ["en", "de", "fr"].forEach(function (code, i) {
+      var b = document.createElement("button");
+      b.type = "button";
+      b.className = "lang-sphere";
+      b.setAttribute("data-lang", code);
+      b.setAttribute("aria-pressed", "false");
+      b.style.animationDelay = (-i * 1.9) + "s";
+      var ball = document.createElement("span");
+      ball.className = "ball " + code;
+      ball.setAttribute("aria-hidden", "true");
+      var flow = document.createElement("span"); flow.className = "flow";
+      var shine = document.createElement("span"); shine.className = "shine";
+      ball.appendChild(flow); ball.appendChild(shine);
+      var name = document.createElement("span");
+      name.textContent = LANGS[code].label;
+      b.appendChild(ball); b.appendChild(name);
+      b.addEventListener("click", function () { chooseLanguage(code, row, ball); });
+      row.appendChild(b);
+    });
+    document.getElementById("language-dock").appendChild(row);
+  }
+  addGreeting();
+  layoutThread();
+
+  // the chatbox: Enter sends. There is no model behind it yet, so a placeholder reply stands in; the text is also
+  // announced on window as an "orb:submit" event for the real app to pick up.
+  chatForm.addEventListener("submit", function (e) {
+    e.preventDefault();
+    var text = msgInput.value.trim();
+    if (!text) return;
+    msgInput.value = "";
+    addMessage("user", text);
+    sfx.play("send");
+    window.dispatchEvent(new CustomEvent("orb:submit", { detail: { text: text } }));
+    clearTimeout(replyTimer);
+    replyTimer = setTimeout(function () { reply(TUTOR_PLACEHOLDER); }, 700);
+  });
+  window.addEventListener("keydown", function (e) {
+    var tg0 = e.target && e.target.tagName;
+    if (e.code === "Space" && tg0 !== "BUTTON" && tg0 !== "INPUT" && tg0 !== "SUMMARY" && e.target !== canvas) {
+      e.preventDefault();
+      setSpeaking(!speaking);
+    }
+  });
+
+  // hooks for the language-practice app: orb.speak(true) and orb.setLevel(0..1) from real audio;
+  // orb.setTheme("light" | "dark") and orb.toggleTheme() drive the same wave as the switch
+  window.orb = {
+    speak: setSpeaking,
+    listen: setListening,
+    addMessage: addMessage,   // addMessage("user" | "tutor", text): adds to the thread without speaking
+    reply: reply,             // reply(text): adds a tutor message and lets the orb speak it
+    getLanguage: function () { return currentLang; },   // "en" | "de" | "fr" once chosen; also announced as an "orb:language" event
+    playDemo: playDemo,
+    stopDemo: stopDemo,
+    stopAudio: stopAudio,
+    setTheme: function (t) { setTheme(t === "dark" || t === 1); },
+    toggleTheme: function () { setTheme(!themeNow); },
+    setLevel: function (v) { externalLevel = (v === null || v === undefined) ? null : Math.min(1, Math.max(0, v)); }
+  };
+
+  // ---- loop -----------------------------------------------------------
+  // ---- the welcome: when the page opens the orb melts into the word "WELCOME!" in glass, holds, then flows back ----
+  // the whole welcome lasts 2.2 seconds: 0.6 wobbling into the word, 1.0 holding it, 0.6 wobbling back into the orb
+  var WORD_IN_MS = 600, WORD_HOLD_MS = 1000, WORD_OUT_MS = 600;
+  var wT0 = 0, wordWob = 0, wKick = 0;        // start time, wobble strength (0..1) and which jelly kicks have been given
+  var WTX_W = 1536, WTX_H = 288;              // size of the word's distance-field texture
+  var wState = reduce ? "done" : "wait";      // wait -> in -> hold -> out -> done (skipped for reduced motion)
+  var wAt = 0, wordMix = 0, wordVel = 0, wordGoal = 0, wordReady = false;
+  function endWelcome() {                     // any interaction lets the orb come back at once
+    if (wState === "done") return;
+    wState = (wState === "wait") ? "done" : "abort";
+  }
+  // a placeholder texture until the real one is built, so the sampler is never left empty
+  var wordTex = gl.createTexture();
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindTexture(gl.TEXTURE_2D, wordTex);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RG16F, 1, 1, 0, gl.RG, gl.FLOAT, new Float32Array([64, 64]));
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  gl.uniform1i(U.u_wtex, 0);
+
+  // exact Euclidean distance transform along one row or column (Felzenszwalb & Huttenlocher)
+  function edt1d(g, off, stride, len, f, v, z) {
+    var INF = 1e20, k = 0, s, q, r;
+    v[0] = 0; z[0] = -INF; z[1] = INF;
+    f[0] = g[off];
+    for (q = 1; q < len; q++) {
+      f[q] = g[off + q * stride];
+      var q2 = q * q;
+      do { r = v[k]; s = (f[q] - f[r] + q2 - r * r) / (q - r) / 2; } while (s <= z[k] && --k > -1);
+      k++; v[k] = q; z[k] = s; z[k + 1] = INF;
+    }
+    for (q = 0, k = 0; q < len; q++) {
+      while (z[k + 1] < q) k++;
+      r = v[k];
+      g[off + q] = f[r] + (q - r) * (q - r);
+    }
+  }
+  function buildWordTexture() {
+    try {
+      var c = document.createElement("canvas");
+      c.width = WTX_W; c.height = WTX_H;
+      var x = c.getContext("2d", { willReadFrequently: true });
+      var txt = "WELCOME!", stroke = 22;
+      var fam = '"Manrope", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif';
+      x.font = "800 220px " + fam;
+      var size = Math.min(260, 220 * (WTX_W - 120 - stroke) / x.measureText(txt).width);
+      x.font = "800 " + size + "px " + fam;
+      x.textAlign = "center"; x.textBaseline = "alphabetic";
+      var m = x.measureText(txt);
+      var base = WTX_H / 2 + (m.actualBoundingBoxAscent - m.actualBoundingBoxDescent) / 2;
+      x.lineJoin = "round"; x.lineWidth = stroke;        // a stroke round the letters makes them plump and bubbly
+      x.fillStyle = x.strokeStyle = "#fff";
+      x.fillText(txt, WTX_W / 2, base);
+      x.strokeText(txt, WTX_W / 2, base);
+      var px = x.getImageData(0, 0, WTX_W, WTX_H).data, n = WTX_W * WTX_H, INF = 1e20;
+      var gO = new Float64Array(n), gI = new Float64Array(n), i;
+      for (i = 0; i < n; i++) {
+        var a = px[i * 4 + 3] / 255;
+        if (a >= 1) { gO[i] = 0; gI[i] = INF; }
+        else if (a <= 0) { gO[i] = INF; gI[i] = 0; }
+        else { var d = 0.5 - a; gO[i] = d > 0 ? d * d : 0; gI[i] = d < 0 ? d * d : 0; }
+      }
+      var mx = Math.max(WTX_W, WTX_H), f = new Float64Array(mx), v = new Uint16Array(mx), z = new Float64Array(mx + 1);
+      [gO, gI].forEach(function (g) {
+        for (var yy = 0; yy < WTX_H; yy++) edt1d(g, yy * WTX_W, 1, WTX_W, f, v, z);
+        for (var xx = 0; xx < WTX_W; xx++) edt1d(g, xx, WTX_W, WTX_H, f, v, z);
+      });
+      var sdf = new Float32Array(n), tmp = new Float32Array(n);
+      // clamped to the range the shader uses (0.30 orb units is about 64 texels), which keeps the half-float values precise
+      for (i = 0; i < n; i++) sdf[i] = Math.max(-64, Math.min(64, Math.sqrt(gO[i]) - Math.sqrt(gI[i])));
+      // a light blur keeps the glass normals smooth along the edges
+      var yy2, xx2, o;
+      for (yy2 = 0; yy2 < WTX_H; yy2++) for (xx2 = 0; xx2 < WTX_W; xx2++) {
+        o = yy2 * WTX_W + xx2;
+        tmp[o] = (sdf[o] * 2 + sdf[xx2 > 0 ? o - 1 : o] + sdf[xx2 < WTX_W - 1 ? o + 1 : o]) / 4;
+      }
+      for (yy2 = 0; yy2 < WTX_H; yy2++) for (xx2 = 0; xx2 < WTX_W; xx2++) {
+        o = yy2 * WTX_W + xx2;
+        sdf[o] = (tmp[o] * 2 + tmp[yy2 > 0 ? o - WTX_W : o] + tmp[yy2 < WTX_H - 1 ? o + WTX_W : o]) / 4;
+      }
+      // a second, heavily softened copy of the field: the orb flows through this rounded version of the word and the
+      // crisp letters sharpen out of it at the end, so the middle of the change has no jagged corners
+      function blurBox(src, r) {
+        var out = new Float32Array(src.length), t2 = new Float32Array(src.length), win = 2 * r + 1, sum, xx, yy, k;
+        for (yy = 0; yy < WTX_H; yy++) {
+          var row = yy * WTX_W; sum = 0;
+          for (k = -r; k <= r; k++) sum += src[row + Math.min(WTX_W - 1, Math.max(0, k))];
+          for (xx = 0; xx < WTX_W; xx++) {
+            t2[row + xx] = sum / win;
+            sum += src[row + Math.min(WTX_W - 1, xx + r + 1)] - src[row + Math.max(0, xx - r)];
+          }
+        }
+        for (xx = 0; xx < WTX_W; xx++) {
+          sum = 0;
+          for (k = -r; k <= r; k++) sum += t2[Math.min(WTX_H - 1, Math.max(0, k)) * WTX_W + xx];
+          for (yy = 0; yy < WTX_H; yy++) {
+            out[yy * WTX_W + xx] = sum / win;
+            sum += t2[Math.min(WTX_H - 1, yy + r + 1) * WTX_W + xx] - t2[Math.max(0, yy - r) * WTX_W + xx];
+          }
+        }
+        return out;
+      }
+      var soft = blurBox(blurBox(sdf, 14), 14), rg = new Float32Array(n * 2);
+      for (i = 0; i < n; i++) { rg[2 * i] = sdf[i]; rg[2 * i + 1] = soft[i]; }
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, wordTex);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RG16F, WTX_W, WTX_H, 0, gl.RG, gl.FLOAT, rg);
+      wordReady = true;
+    } catch (err) { console.error("welcome texture failed", err); wState = "done"; }
+  }
+  (function startWordBuild() {
+    var started = false;
+    function go() { if (started) return; started = true; setTimeout(buildWordTexture, 0); }
+    if (document.fonts && document.fonts.load) {
+      document.fonts.load('800 100px "Manrope"', "WELCOME!").then(go, go);
+      setTimeout(go, 2500);
+    } else go();
+  })();
+
+  var t0 = performance.now(), last = t0;
+  function frame(now) {
+    var dt = Math.min((now - last) / 1000, 1 / 20);
+    last = now;
+    var t = (now - t0) / 1000 * (reduce ? 0.5 : 1);
+    var amp = reduce ? 0.5 : 1;
+
+    // theme wave clock (ease in-out), and the UI flip when the front reaches the controls
+    if (waving) {
+      var tt = Math.min(1, Math.max(0, (now - waveStart) / waveDur));
+      wave = tt < 0.5 ? 4 * tt * tt * tt : 1 - Math.pow(-2 * tt + 2, 3) / 2;
+      if (uiPending && wave * 1.2 >= uiDd) { applyUi(toT); uiPending = false; }
+      if (tt >= 1) {
+        waving = false; wave = 1; fromT = toT;
+        if (uiPending) { applyUi(toT); uiPending = false; }
+      }
+    }
+
+    // Fast, responsive entry; smooth return to idle. Both can reverse mid-transition.
+    var spk = speaking && !listening;     // listening pauses speaking; it resumes if still wanted
+    var step = dt / (spk ? 0.75 : 0.70);
+    prog = spk ? Math.min(1, prog + step) : Math.max(0, prog - step);
+    // Cubic ease-out on entry avoids the long initial hesitation.
+    // A gentler cubic on exit lets the glass settle naturally.
+    speakMix = spk ? 1 - Math.pow(1 - prog, 3) : prog * prog * (3 - 2 * prog);
+    var lstep = dt / 0.85;
+    listenProg = listening ? Math.min(1, listenProg + lstep) : Math.max(0, listenProg - lstep);
+    listenMix = listenProg * listenProg * (3 - 2 * listenProg);
+    // the orb stretches into the microphone on a spring, so it overshoots a little and settles
+    var micGoal = listening ? 1 : 0;
+    if (reduce) { micMix = micGoal; micVel = 0; }
+    else {
+      var sub = 3, h = dt / sub;
+      for (var si = 0; si < sub; si++) {
+        micVel += ((micGoal - micMix) * (listening ? 62 : 48) - micVel * (listening ? 8.5 : 9.5)) * h;
+        micMix += micVel * h;
+      }
+    }
+    if (audioActive) externalLevel = readAudioEnergy();
+    micPulse *= Math.exp(-dt * 2.5);      // the orb's reaction to detected speech fades away between words
+    var tg = listening ? (0.10 + 0.06 * Math.sin(t * 1.6) + (externalLevel !== null ? 0.5 * externalLevel : 0) + 0.32 * micPulse) : spk ? (externalLevel !== null ? externalLevel : (demoActive ? demoEnergy(now, t) : speechTarget(t))) : 0;
+    level += (tg - level) * (1 - Math.exp(-dt * (tg > level ? 18 : 7)));
+    var rt = (speaking && !listening) ? (0.30 + 0.70 * level) : 0;
+    levelSlow += (level - levelSlow) * (1 - Math.exp(-dt * 4.5));
+    rippleE += (rt - rippleE) * (1 - Math.exp(-dt * 2.2));
+    rphase += dt * (0.14 + 0.30 * rippleE) * (reduce ? 0.5 : 1);
+    capTick(now);
+    // Every ribbon has a separate envelope. Fast attack, controlled release.
+    // Simulated modes use different rhythms; uploaded audio uses measured FFT bins.
+    var targets = audioActive ? frequencyBands : (spk ? [
+      tg * (0.65 + 0.20 * Math.sin(t * 3.2 + 0.3)),
+      tg * (0.72 + 0.22 * Math.sin(t * 7.1 + 1.5)),
+      tg * (0.50 + 0.40 * Math.pow(Math.sin(t * 13.9 + 2.2), 2.0))
+    ] : [0, 0, 0]);
+    for (var bi = 0; bi < 3; bi++) {
+      var target = Math.min(1, Math.max(0, targets[bi]));
+      var speed = target > bandsSmooth[bi] ? (bi == 2 ? 25 : 19) : (bi == 0 ? 6 : 10);
+      bandsSmooth[bi] += (target - bandsSmooth[bi]) * (1 - Math.exp(-dt * speed));
+    }
+
+    // Smooth the ambient glow independently: ~1.4s rise, ~2.3s fall.
+    // Preserve the quick response of the orb ribbons themselves.
+    var ambientTarget = spk ? Math.min(1, 0.52 + 0.48 * level) : 0;
+    var floorRate = ambientTarget > floorLevel ? 1.05 : 0.40;
+    floorLevel += (ambientTarget - floorLevel) * (1 - Math.exp(-dt * floorRate));
+    for (var fi = 0; fi < 3; fi++) {
+      var fTarget = spk ? bandsSmooth[fi] : 0;
+      floorBands[fi] += (fTarget - floorBands[fi]) * (1 - Math.exp(-dt * 0.65));
+    }
+
+    // underdamped springs give the soft wobble and the slight sideways stretch
+    // speaking: the orb stays a circle. It swells a little with the loudness (pulse) and is squeezed or stretched a
+    // little as the voice rises or falls away (jelly); the springs below ring that out into a soft wobble.
+    var onset = Math.max(-1, Math.min(1, (level - levelSlow) * 2.2));
+    var pulse = 0.014 * level * speakMix * amp;      // gentle swell with the voice
+    var jelly = 0.020 * onset * speakMix * amp;      // gentle squeeze and stretch
+    // idle: a slow breath (both axes swell together) with two slower, offset drifts so it never feels mechanical
+    var iw = (1 - 0.30 * speakMix) * amp;            // the slow breath keeps going while speaking
+    var breath = Math.sin(t * 1.25);
+    var txs = 1 + pulse + jelly - listenMix * (0.035 - 0.02 * level) + iw * (0.011 * breath + 0.005 * Math.sin(t * 0.8 + 1.2));
+    var tys = 1 + pulse - jelly * 0.8 - listenMix * (0.035 - 0.02 * level) + iw * (0.011 * Math.sin(t * 1.25 - 0.35) + 0.005 * Math.sin(t * 1.05 + 2.0));
+    if (listenMix > 0.001) {   // the microphone breathes in with the rhythm of the voice it hears, and settles between words
+      var breathIn = listenMix * (0.040 * level + 0.006 * Math.sin(t * 1.4));
+      txs += breathIn; tys += breathIn * 1.15;
+    }
+    var k = 110 + 15 * speakMix, c = 15 - 1.5 * speakMix, steps = 2, h = dt / steps;   // barely springier while speaking, so the wobble stays soft
+    for (var i = 0; i < steps; i++) {
+      vx += (k * (txs - sx) - c * vx) * h; sx += vx * h;
+      vy += (k * (tys - sy) - c * vy) * h; sy += vy * h;
+    }
+
+    var intro = introVisual(now);
+    // the welcome word: wait for the entrance and the texture, melt in, hold, melt back
+    if (wState === "wait" && !introActive && wordReady) { wState = "run"; wT0 = now; wKick = 0; vx += 1.3; vy -= 1.1; }
+    if (wState === "run") {
+      var te = now - wT0, ease;
+      if (te < WORD_IN_MS) {                                      // flowing into the word, wobbling as it goes
+        ease = te / WORD_IN_MS; wordMix = ease * ease * (3 - 2 * ease);
+        wordWob = 0.35 + 0.65 * Math.sin(Math.PI * ease);
+      } else if (te < WORD_IN_MS + WORD_HOLD_MS) {                // arrived: a jelly jolt, then the wobble settles
+        if (wKick < 1) { wKick = 1; vx -= 1.5; vy += 1.3; }
+        wordMix = 1;
+        wordWob = Math.exp(-(te - WORD_IN_MS) / 130);
+      } else if (te < WORD_IN_MS + WORD_HOLD_MS + WORD_OUT_MS) {  // flowing back into the orb, wobbling again
+        if (wKick < 2) { wKick = 2; vx += 1.0; vy -= 0.9; }
+        ease = (te - WORD_IN_MS - WORD_HOLD_MS) / WORD_OUT_MS; wordMix = 1 - ease * ease * (3 - 2 * ease);
+        wordWob = 0.35 + 0.65 * Math.sin(Math.PI * ease);
+      } else { wState = "done"; wordMix = 0; wordWob = 0; vx -= 1.4; vy += 1.2; }   // back to the orb with one last jelly jiggle
+    } else if (wState === "abort") {                              // interrupted: melt straight back into the orb
+      wordMix = Math.max(0, wordMix - dt / 0.45); wordWob = wordMix * 0.6;
+      if (wordMix <= 0) { wState = "done"; wordWob = 0; }
+    }
+    var orbD = Math.min(H * ORB_H, W * ORB_W);
+    var wordHW = Math.min(3.6, (W * 0.44) / Math.max(1, orbD / 2 * intro.size));
+    gl.uniform2f(U.u_res, W, H);
+    gl.uniform2f(U.u_center, W * 0.5, H * ORB_Y);
+    gl.uniform1f(U.u_a, orbD / 2 * intro.size);
+    gl.uniform2f(U.u_scale, sx, sy);
+    gl.uniform1f(U.u_time, t);
+    gl.uniform1f(U.u_speak, intro.speak === null ? speakMix : Math.max(speakMix, intro.speak));
+    gl.uniform1f(U.u_level, Math.max(level, intro.energy));
+    gl.uniform3f(U.u_bands, bandsSmooth[0], bandsSmooth[1], bandsSmooth[2]);
+    gl.uniform1f(U.u_floorLevel, Math.max(floorLevel, intro.ambient));
+    gl.uniform3f(U.u_floorBands, floorBands[0], floorBands[1], floorBands[2]);
+    gl.uniform1f(U.u_listen, listenMix);
+    gl.uniform1f(U.u_word, wordMix);
+    gl.uniform1f(U.u_wob, wordWob);
+    gl.uniform1f(U.u_wordHW, wordHW);
+    gl.uniform1f(U.u_mic, micMix);
+    if (dropAnim) {
+      var DUR = 1150, tt = (now - dropAnim.t0) / DUR;
+      if (tt >= 1) { var dn = dropAnim.done; dropAnim = null; dn(); }
+      else {
+        var da = dropAnim;
+        var pp = easeIn3(Math.min(1, tt / 0.20));                 // the final lunge into the glass
+        var xcss = da.tx + (da.cx - da.tx) * pp;
+        var ycss = da.ty + (da.cy - da.ty) * pp;
+        var rad = da.r0 * (1 - 0.5 * Math.min(1, tt / 0.20));
+        var wd = tt < 0.18 ? 1 : Math.max(0, 1 - (tt - 0.18) / 0.14);
+        var dc = DROP_COL[da.code];
+        gl.uniform4f(U.u_drop, xcss * DPR, H - ycss * DPR, rad * DPR, wd);
+        gl.uniform3f(U.u_dropCol, dc[0], dc[1], dc[2]);
+        gl.uniform2f(U.u_impact, (da.cx - da.ux * da.orbR) * DPR, H - (da.cy - da.uy * da.orbR) * DPR);   // the edge facing the sphere
+        gl.uniform1f(U.u_absorb, tt < 0.17 ? -1 : Math.min(1, (tt - 0.17) / 0.83));
+        if (!da.reacted && tt >= 0.17) { da.reacted = true; orbReact(true); sfx.play("pill"); }   // the crash
+        if (!da.tinted && tt >= 0.45) { da.tinted = true; setTint(da.code); }
+      }
+    }
+    if (!dropAnim) {
+      gl.uniform4f(U.u_drop, 0, 0, 0, 0);
+      gl.uniform1f(U.u_absorb, -1);
+    }
+    gl.uniform1f(U.u_from, fromT);
+    gl.uniform1f(U.u_to, toT);
+    gl.uniform1f(U.u_wave, wave);
+    gl.uniform2f(U.u_origin, origin[0], origin[1]);
+    gl.uniform1f(U.u_maxd, maxd);
+    gl.uniform1f(U.u_ripple, Math.max(rippleE * speakMix, intro.ripple));
+    gl.uniform1f(U.u_rphase, rphase);
+    // A single reflection sweep, never replayed during normal speech or theme changes.
+    var glintTime = now - introStartedAt - GLINT_START;
+    var glint = (!reduce && !introWasSkipped && glintTime >= 0 && glintTime <= GLINT_DURATION)
+      ? glintTime / GLINT_DURATION : -1;
+    // the same reflection sweeps across the orb when a language pill is clicked
+    var orbGlintTime = now - orbGlintAt;
+    if (glint < 0 && !introActive && orbGlintTime >= 0 && orbGlintTime <= 900) glint = orbGlintTime / 900;
+    gl.uniform1f(U.u_glint, glint);
+    gl.uniform1f(U.u_introColor, intro.color);
+    tintAmt += (tintGoal - tintAmt) * (1 - Math.exp(-dt * 1.4));                       // the language colour fades in
+    for (var ti = 0; ti < 3; ti++) tintCol[ti] += (tintTarget[ti] - tintCol[ti]) * (1 - Math.exp(-dt * 3));
+    gl.uniform3f(U.u_tint, tintCol[0], tintCol[1], tintCol[2]);
+    gl.uniform1f(U.u_tintAmt, tintAmt);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+})();
