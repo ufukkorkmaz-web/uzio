@@ -1,0 +1,238 @@
+/* UZIO layout preview: home screen + Uzio's room.
+   Loads AFTER style.css. The room reuses the real orb page unchanged. */
+:root {
+  --ink: #1C1C1C;
+  --sun: #FFCD54;
+  --sky: #2391FF;
+  --berry: #F70063;
+  --cream: #FFF8F0;
+}
+
+/* ================= HOME ================= */
+#home {
+  position: fixed;
+  inset: 0;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--ink);
+  color: var(--cream);
+  font-family: var(--font-ui);
+  padding: max(10px, env(safe-area-inset-top, 0px)) clamp(14px, 3.5vw, 48px) 0;
+}
+#home button { font-family: var(--font-ui); }
+#home :focus-visible { outline: 3px solid var(--cream); outline-offset: 3px; }
+
+/* soft colour pools, cheap radial gradients instead of blur filters */
+.glow { position: absolute; border-radius: 50%; pointer-events: none; z-index: 0; }
+.g1 { width: 70vmax; height: 70vmax; left: -25vmax; top: -38vmax;
+      background: radial-gradient(closest-side, rgba(255, 205, 84, 0.20), transparent);
+      animation: drift1 19s ease-in-out infinite alternate; }
+.g2 { width: 65vmax; height: 65vmax; right: -28vmax; top: 6vmax;
+      background: radial-gradient(closest-side, rgba(35, 145, 255, 0.20), transparent);
+      animation: drift2 23s ease-in-out infinite alternate; }
+.g3 { width: 70vmax; height: 70vmax; left: 12vw; bottom: -42vmax;
+      background: radial-gradient(closest-side, rgba(247, 0, 99, 0.20), transparent);
+      animation: drift1 27s ease-in-out infinite alternate-reverse; }
+@keyframes drift1 { to { transform: translate(6vmax, 4vmax) scale(1.08); } }
+@keyframes drift2 { to { transform: translate(-6vmax, 5vmax) scale(1.1); } }
+
+/* top bar */
+.top {
+  position: relative;
+  z-index: 2;
+  flex: none;
+  height: 56px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.logo { display: flex; align-items: center; gap: 10px; font: 800 26px/1 var(--font-ui); letter-spacing: 0.03em; }
+.logo i { width: 14px; height: 14px; border-radius: 50%; background: var(--sun); box-shadow: 0 0 0 4px rgba(255, 205, 84, 0.25); }
+.hello { font: 600 15px/1 var(--font-ui); color: rgba(255, 248, 240, 0.7); }
+.top-right { display: flex; gap: 10px; }
+.pill {
+  display: flex; align-items: center; gap: 8px; height: 40px; padding: 0 14px;
+  border-radius: 999px; cursor: pointer;
+  background: rgba(255, 248, 240, 0.08);
+  border: 1px solid rgba(255, 248, 240, 0.16);
+  color: var(--cream);
+  font: 700 14px/1 var(--font-ui);
+  transition: background 0.25s ease, transform 0.2s ease;
+}
+.pill:hover { background: rgba(255, 248, 240, 0.14); }
+.pill:active { transform: scale(0.95); }
+.pill svg { width: 18px; height: 18px; }
+.pill.round { width: 40px; padding: 0; justify-content: center; }
+.pill .star { color: var(--sun); }
+
+/* game grid: always fills the space between the top bar and the dock, so the page never scrolls */
+.games {
+  position: relative;
+  z-index: 2;
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  gap: clamp(10px, 1.6vw, 22px);
+  grid-template-columns: repeat(3, 1fr);
+  grid-template-rows: repeat(2, 1fr);
+  padding: clamp(6px, 1.4vh, 16px) 0;
+}
+@media (max-aspect-ratio: 1/1), (max-width: 700px) {
+  .games { grid-template-columns: repeat(2, 1fr); grid-template-rows: repeat(3, 1fr); }
+  .hello { display: none; }
+}
+
+.tile {
+  position: relative;
+  overflow: hidden;
+  min-height: 0;
+  border: 0;
+  text-align: left;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  padding: clamp(14px, 2.2vw, 28px);
+  border-radius: clamp(20px, 3vw, 34px);
+  color: var(--ink);
+  background: var(--t);
+  box-shadow: inset 0 2px 0 rgba(255, 255, 255, 0.45), inset 0 -12px 26px rgba(0, 0, 0, 0.14), 0 18px 40px -18px rgba(0, 0, 0, 0.7);
+  transition: transform 0.35s cubic-bezier(.3, 1.4, .5, 1), box-shadow 0.3s ease;
+  animation: pop 0.6s cubic-bezier(.3, 1.4, .5, 1) both;
+  animation-delay: calc(var(--i) * 70ms + 150ms);
+}
+.tile::before {          /* glass shine, the same idea as the orb */
+  content: ""; position: absolute; left: -12%; top: -34%; width: 85%; height: 75%;
+  border-radius: 50%; transform: rotate(-20deg); pointer-events: none;
+  background: radial-gradient(closest-side, rgba(255, 255, 255, 0.34), transparent);
+}
+.tile::after {           /* big soft disc in the corner */
+  content: ""; position: absolute; right: -16%; bottom: -34%; width: 68%; aspect-ratio: 1;
+  border-radius: 50%; background: rgba(255, 255, 255, 0.14); pointer-events: none;
+}
+.tile:hover { transform: translateY(-6px) rotate(-0.6deg); box-shadow: inset 0 2px 0 rgba(255, 255, 255, 0.5), inset 0 -12px 26px rgba(0, 0, 0, 0.14), 0 28px 46px -18px rgba(0, 0, 0, 0.75); }
+.tile:active { transform: scale(0.97); }
+@keyframes pop { from { opacity: 0; transform: translateY(18px) scale(0.92); } to { opacity: 1; transform: none; } }
+
+.tile .ico { position: relative; z-index: 1; width: clamp(40px, 9vh, 78px); height: clamp(40px, 9vh, 78px); fill: none; stroke: currentColor; stroke-width: 4; stroke-linecap: round; stroke-linejoin: round; }
+.tile .bottom { position: relative; z-index: 1; display: flex; flex-direction: column; gap: clamp(6px, 1vh, 10px); align-items: flex-start; }
+.tile .name { font: 800 clamp(18px, min(3.6vh, 3vw), 34px)/1.05 var(--font-ui); letter-spacing: -0.01em; }
+.tile .tag { font: 700 11px/1 var(--font-ui); letter-spacing: 0.06em; text-transform: uppercase; padding: 6px 10px; border-radius: 999px; background: rgba(28, 28, 28, 0.85); color: var(--cream); }
+
+.t-sun   { --t: var(--sun); }
+.t-sky   { --t: var(--sky); color: #fff; }
+.t-berry { --t: var(--berry); color: #fff; }
+.t-cream { --t: var(--cream); }
+.t-mix   { --t: linear-gradient(135deg, var(--sky), var(--berry)); color: #fff; }
+.t-glass { --t: linear-gradient(160deg, #303030, #222); color: var(--cream); box-shadow: inset 0 0 0 2px rgba(255, 205, 84, 0.55), inset 0 2px 0 rgba(255, 255, 255, 0.2), 0 18px 40px -18px rgba(0, 0, 0, 0.7); }
+.t-glass .tag { background: var(--cream); color: var(--ink); }
+
+/* dock with the Uzio bead */
+.uzio-dock {
+  position: relative;
+  z-index: 2;
+  flex: none;
+  height: clamp(104px, 17vh, 150px);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+.uzio-dock .label { font: 700 13px/1 var(--font-ui); color: rgba(255, 248, 240, 0.8); letter-spacing: 0.02em; }
+.bead {
+  position: relative;
+  width: clamp(66px, 10vh, 92px);
+  aspect-ratio: 1;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: none;
+  cursor: pointer;
+  isolation: isolate;
+  transition: transform 0.35s cubic-bezier(.3, 1.4, .5, 1);
+  animation: float 5s ease-in-out infinite;
+}
+.bead:hover { transform: scale(1.08); }
+.bead:active { transform: scale(0.93); }
+@keyframes float { 0%, 100% { translate: 0 0; } 50% { translate: 0 -5px; } }
+.bead .core {
+  position: absolute; inset: 0; border-radius: 50%; overflow: hidden;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.3), 0 16px 36px -6px rgba(247, 0, 99, 0.55),
+              inset 0 -10px 18px rgba(0, 0, 0, 0.3), inset 0 3px 6px rgba(255, 255, 255, 0.4);
+}
+.bead .core::before {
+  content: ""; position: absolute; inset: -40%;
+  background: conic-gradient(from 0deg, var(--sun), var(--berry), var(--sky), var(--sun));
+  animation: spin 9s linear infinite;
+}
+.bead .core::after {
+  content: ""; position: absolute; inset: 0; border-radius: 50%;
+  background: radial-gradient(circle at 50% 38%, transparent 50%, rgba(0, 0, 0, 0.35) 100%);
+}
+.bead .shine {
+  position: absolute; z-index: 2; left: 14%; top: 8%; width: 50%; height: 30%; border-radius: 50%;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.8), rgba(255, 255, 255, 0)); transform: rotate(-24deg);
+}
+.bead .ring { position: absolute; inset: 0; z-index: -1; border-radius: 50%; border: 2px solid var(--sun); opacity: 0; animation: ring 2.8s ease-out infinite; }
+.bead .ring.r2 { animation-delay: 1.4s; }
+@keyframes spin { to { transform: rotate(360deg); } }
+@keyframes ring { 0% { opacity: 0.7; transform: scale(1); } 100% { opacity: 0; transform: scale(1.9); } }
+
+/* short landscape screens (phones on their side): the bead floats in the corner instead of taking a row */
+@media (max-height: 480px) and (orientation: landscape) {
+  .uzio-dock { position: fixed; right: 18px; bottom: 14px; height: auto; z-index: 5; }
+  .uzio-dock .label { display: none; }
+  .tile .ico { display: none; }
+  .tile { justify-content: flex-end; }
+  .games { padding-bottom: 12px; }
+}
+
+/* while Uzio's room is open, everything behind it stands still */
+body.room-open #home,
+body.room-open #home *,
+body.room-open #home *::before,
+body.room-open #home *::after { animation-play-state: paused !important; }
+
+@media (prefers-reduced-motion: reduce) {
+  #home *, #home *::before, #home *::after { animation: none !important; transition: none !important; }
+}
+
+/* ================= UZIO'S ROOM ================= */
+/* The real orb page lives in here. It opens as a circle growing out of the bead. */
+#room {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  clip-path: circle(0px at var(--ox, 50%) var(--oy, 88%));
+  transition: clip-path 0.9s cubic-bezier(.7, 0, .2, 1);
+}
+#room.open { clip-path: circle(160vmax at var(--ox, 50%) var(--oy, 88%)); }
+#room .tools, #room .chat-tools { display: none; }   /* test panels stay out of the preview */
+
+.back {
+  position: fixed;
+  z-index: 30;
+  top: calc(12px + env(safe-area-inset-top, 0px));
+  left: max(14px, env(safe-area-inset-left, 0px));
+  height: 36px;
+  padding: 0 16px 0 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font: 700 13px/1 var(--font-ui);
+  color: var(--fg);
+  background: var(--fill);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  cursor: pointer;
+  -webkit-backdrop-filter: blur(14px);
+  backdrop-filter: blur(14px);
+  transition: background 0.3s ease, transform 0.2s ease;
+}
+.back:hover { background: var(--fill-hover); }
+.back:active { transform: scale(0.95); }
+.back:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.back svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; }
