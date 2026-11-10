@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>UZIO</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Manrope:wght@500;600&display=swap">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<canvas id="orb" role="button" tabindex="0" aria-label="Start or stop a voice conversation" aria-pressed="false"></canvas>
+<button id="intro-skip" class="intro-skip" type="button" hidden>Skip intro &rarr;</button>
+<p id="nogl" hidden>This page needs WebGL 2 to draw the orb. Open it in a current version of Chrome, Safari, Edge or Firefox.</p>
+
+<button id="theme" class="theme" type="button" role="switch" aria-checked="true" aria-label="Switch to light mode" title="Switch theme">
+  <span class="sky day"></span>
+  <span class="sky night"></span>
+  <span class="stars" aria-hidden="true"><i></i><i></i><i></i></span>
+  <span class="cloud" aria-hidden="true"></span>
+  <span class="knob" aria-hidden="true">
+    <svg class="sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4.2"/><path d="M12 2.5v2.2M12 19.3v2.2M2.5 12h2.2M19.3 12h2.2M5.3 5.3l1.6 1.6M17.1 17.1l1.6 1.6M5.3 18.7l1.6-1.6M17.1 6.9l1.6-1.6"/></svg>
+    <svg class="moon" viewBox="0 0 24 24"><path d="M20.5 13.2A8.6 8.6 0 1 1 10.8 3.5a6.8 6.8 0 0 0 9.7 9.7z"/></svg>
+  </span>
+  <span class="ring" aria-hidden="true"></span>
+</button>
+
+<button id="sound" class="sound" type="button" aria-pressed="true" aria-label="Mute sounds" title="Sounds on">
+  <svg viewBox="0 0 24 24" aria-hidden="true">
+    <path d="M4 9.5h3.5L12 6v12l-4.5-3.5H4z"/>
+    <g class="waves"><path d="M15.5 9.2a4 4 0 0 1 0 5.6"/><path d="M18 6.8a7.5 7.5 0 0 1 0 10.4"/></g>
+    <path class="slash" d="M16 9.5l5 5M21 9.5l-5 5"/>
+  </svg>
+</button>
+
+<details class="tools" id="tools">
+  <summary>Test controls</summary>
+  <div class="panel">
+    <button id="toggle" type="button" aria-pressed="false">Speak</button>
+    <button id="listen" type="button" aria-pressed="false">Listen</button>
+    <button id="demo" type="button">Play sample speech</button>
+    <div class="audio-controls">
+      <input id="audio-file" type="file" accept="audio/*" aria-label="Choose a speech audio file">
+      <button id="audio-play" type="button" disabled>Play real audio</button>
+    </div>
+    <p class="sample" id="sample">“Hello there! Watch how the colours dance as I speak. Every word has its own rhythm, and every pause lets the glass settle.”</p>
+  </div>
+</details>
+
+<div class="caption" id="caption" aria-hidden="true"></div>
+
+
+  <div class="dock" id="dock">
+    <div id="language-dock" class="language-dock" role="group" aria-label="Choose a practice language"></div>
+  </div>
+  <button id="mic" class="mic floating-mic" type="button" aria-pressed="false" aria-label="Talk with your voice" title="Talk with your voice">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>
+  </button>
+  <p id="state" class="sr-only" aria-live="polite">Idle · tap the orb or press Space</p>
+  <details class="chat-tools" id="chat-tools">
+    <summary>Chat</summary>
+    <div class="chat-panel">
+      <div class="chat-panel-heading">Conversation</div>
+      <div class="chat-history" id="chat-history" role="log" aria-live="polite" aria-label="Chat history">
+        <p class="chat-empty" id="chat-empty">Your conversation will appear here.</p>
+      </div>
+      <span class="chat-scroll-dot" id="chat-scroll-dot" aria-hidden="true"></span>
+    </div>
+  </details>
+  <!-- Hidden transport retains existing speech-to-text and orb:submit integration. -->
+  <form id="chat" class="chat-compose" hidden autocomplete="off" aria-hidden="true">
+    <input id="msg" type="hidden" value="">
+  </form>
+
+<script src="script.js"></script>
+
+</body>
+</html>
